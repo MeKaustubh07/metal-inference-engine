@@ -150,3 +150,7 @@ src/backend/           protocol, torch reference, Metal src/kernels/        *.me
 src/native/            Objective-C++ Metal runtime      src/server/         scheduler, API, metrics
 scripts/               goldens, bench, quantize, calibrate, serve, loadgen, repl, run_tests
 ```
+
+## License
+
+[Apache-2.0](LICENSE). Model weights are not part of this repository; each model keeps its own licence.
