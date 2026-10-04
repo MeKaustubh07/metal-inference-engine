@@ -1,7 +1,8 @@
 """Byte-level BPE tokenizer, built from tokenizer.json alone.
 
-Pipeline (encode):  special-token split -> NFC normalize -> regex pre-split -> bytes -> stand-in chars
-                    -> BPE merges by priority -> vocab lookup.   Decode runs the last steps backwards.
+Pipeline (encode):  special-token split -> normalize (if the file asks) -> regex pre-splits -> bytes
+                    -> stand-in chars -> BPE merges by priority -> vocab lookup [-> BOS in front, if asked].
+Decode runs the BPE steps backwards.
 """
 import json
 import unicodedata
@@ -50,15 +51,65 @@ class Tokenizer:
         self.id_to_token.update({i: t for t, i in self.special.items()})
         self.special_re = regex.compile("(" + "|".join(regex.escape(s) for s in self.special) + ")")
 
-        # The pre-tokenizer regex, taken VERBATIM from the file (the `regex` engine supports (?i:...)).
+        # Stage 1, normalization: Qwen3.5's file asks for NFC; Tiny Aya's has none (text is used as given).
+        norm = spec["normalizer"]
+        if norm not in (None, {"type": "NFC"}):
+            raise NotImplementedError(f"normalizer {norm}")
+        self.nfc = norm is not None
+
+        # Stage 2, pre-tokenization: a Sequence of regex Splits, then ByteLevel. Each Split is "Isolated": a match
+        # becomes its own piece and the text between matches stays as pieces too. Qwen3.5 has one Split whose regex
+        # covers every character; Tiny Aya first splits off digit groups (3 at a time, from the right), then splits
+        # every piece with a GPT-4o-style regex. ByteLevel with use_regex=false only maps bytes to stand-in chars.
+        # The regexes are taken VERBATIM from the file (the `regex` engine supports (?i:...)).
         # Note: for Qwen3.5 checkpoints, transformers' AutoTokenizer resolves to Qwen2Tokenizer (per the checkpoint's
         # tokenizer_config.json) and substitutes the older Qwen2 regex, which lacks \p{M}; it then splits combining
         # marks (Hindi, Tamil, Thai, Arabic) differently from this file. The file and transformers' own
         # Qwen3_5Tokenizer agree with each other, and this engine follows them.
-        pattern = spec["pre_tokenizer"]["pretokenizers"][0]["pattern"]["Regex"]
-        self.pre_re = regex.compile(pattern)
+        pt = spec["pre_tokenizer"]
+        steps = pt["pretokenizers"] if pt["type"] == "Sequence" else [pt]
+        *splits, last = steps
+        if last["type"] != "ByteLevel" or last["use_regex"] or last["add_prefix_space"]:
+            raise NotImplementedError(f"pre-tokenizer must end with a plain ByteLevel step, got {last}")
+        for p in splits:
+            if p["type"] != "Split" or p["behavior"] != "Isolated" or p["invert"]:
+                raise NotImplementedError(f"pre-tokenizer step {p}")
+        self.splits = [regex.compile(p["pattern"]["Regex"]) for p in splits]
+
+        if model["type"] != "BPE" or model.get("ignore_merges") or model.get("byte_fallback") or model.get("dropout"):
+            raise NotImplementedError("only plain byte-level BPE is implemented")
+
+        # After BPE: Tiny Aya's post-processor puts <BOS_TOKEN> in front of every sequence; Qwen3.5's adds nothing.
+        pp = spec.get("post_processor") or {}
+        single = pp.get("single", []) if pp.get("type") == "TemplateProcessing" else [{"Sequence": {"id": "A"}}]
+        if [next(iter(x)) for x in single] == ["SpecialToken", "Sequence"]:
+            self.bos_id: int | None = pp["special_tokens"][single[0]["SpecialToken"]["id"]]["ids"][0]
+        elif [next(iter(x)) for x in single] == ["Sequence"]:
+            self.bos_id = None
+        else:
+            raise NotImplementedError(f"post-processor template {single}")
 
         self.byte_to_char, self.char_to_byte = build_byte_alphabet()
+
+    # ---------- Stage 2: regex pre-splits ----------
+    def _pieces(self, text: str) -> list[str]:
+        """Apply every Split in turn to every piece so far. Isolated: each match is its own piece, and the text
+        between matches is kept as pieces too (a plain findall would silently drop it)."""
+        pieces = [text]
+        for rx in self.splits:
+            out = []
+            for s in pieces:
+                last = 0
+                for m in rx.finditer(s):
+                    if m.start() > last:
+                        out.append(s[last:m.start()])     # the gap before this match
+                    if m.end() > m.start():
+                        out.append(m.group())             # the match itself (empty matches add nothing)
+                    last = m.end()
+                if last < len(s):
+                    out.append(s[last:])                  # the tail after the last match
+            pieces = out
+        return pieces
 
     # ---------- Stage 3: BPE merging for ONE chunk ----------
     def _bpe(self, chunk: str) -> list[str]:
@@ -85,16 +136,20 @@ class Tokenizer:
         return symbols
 
     # ---------- Encode: text -> ids ----------
-    def encode(self, text: str) -> list[int]:
-        ids: list[int] = []
+    def encode(self, text: str, add_bos: bool = False) -> list[int]:
+        """add_bos: put the model's BOS in front (only if its post-processor has one), as for a raw prompt.
+        Off by default: a chat template writes BOS itself, and a continuation (a decision option, a next turn)
+        must never get one."""
+        ids: list[int] = [self.bos_id] if add_bos and self.bos_id is not None else []
         for part in self.special_re.split(text):                          # Stage 0: peel off specials
             if not part:
                 continue
             if part in self.special:
                 ids.append(self.special[part])
                 continue
-            part = unicodedata.normalize("NFC", part)                    # Stage 1
-            for chunk in self.pre_re.findall(part):                       # Stage 2: word-like chunks
+            if self.nfc:
+                part = unicodedata.normalize("NFC", part)                # Stage 1
+            for chunk in self._pieces(part):                              # Stage 2: word-like chunks
                 mapped = "".join(self.byte_to_char[b] for b in chunk.encode("utf-8"))  # Stage 2b
                 for piece in self._bpe(mapped):                           # Stage 3
                     ids.append(self.vocab[piece])                         # vocab lookup

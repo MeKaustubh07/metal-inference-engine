@@ -1,27 +1,36 @@
-"""Compare our tokenizer against the official answer keys for the Qwen3.5 tokenizer (shared by 0.8B and 2B)."""
+"""Compare our tokenizer against the official answer keys (scripts/golden_tokens.py) for each model's tokenizer.json:
+the ids with and without the post-processor's specials (Tiny Aya's BOS), and the decoded text."""
 import json
+import os
 import sys
 import unicodedata
 
 sys.path.insert(0, "src")
 from tokenizer import Tokenizer
 
-MODELS = [("Qwen3.5-0.8B", "models/qwen3.5-0.8b", "tests/golden_tokens_qwen35.json")]
+MODELS = [("Qwen3.5-0.8B", "models/qwen3.5-0.8b", "tests/golden_tokens_qwen35.json"),
+          # gitignored: the gated files are needed to make it (scripts/golden_tokens.py models/tiny-aya-global ...)
+          ("Tiny Aya Global", "models/tiny-aya-global", "tests/golden_tokens_aya.json")]
 
 all_ok = True
 for name, model_dir, golden in MODELS:
+    if not (os.path.exists(f"{model_dir}/tokenizer.json") and os.path.exists(golden)):
+        print(f"SKIP {name}: needs {model_dir}/tokenizer.json and {golden}")
+        continue
     tok = Tokenizer(f"{model_dir}/tokenizer.json")
     cases = json.load(open(golden, encoding="utf-8"))
     passed = 0
     for c in cases:
-        ids = tok.encode(c["text"])
-        round_trip = tok.decode(ids) == unicodedata.normalize("NFC", c["text"])    # the normalizer applies NFC
-        if ids == c["ids"] and round_trip:
+        plain, full = tok.encode(c["text"]), tok.encode(c["text"], add_bos=True)
+        text = unicodedata.normalize("NFC", c["text"]) if tok.nfc else c["text"]   # what decoding should give back
+        decoded = tok.decode(plain)
+        if plain == c["ids_plain"] and full == c["ids"] and decoded == c["decoded"] == text:
             passed += 1
         else:
-            print("FAIL", name, repr(c["text"]), "\n  ours:", ids, "\n  gold:", c["ids"], "\n  round-trip ok:", round_trip)
+            print("FAIL", name, repr(c["text"]), "\n  ours:", plain, "\n  gold:", c["ids_plain"],
+                  "\n  with BOS ok:", full == c["ids"], " decoded ok:", decoded == c["decoded"], decoded == text)
     all_ok &= passed == len(cases)
-    print(f"{name}: {passed}/{len(cases)} cases match the official tokenizer (vocab {tok.vocab_size()})")
+    print(f"{name}: {passed}/{len(cases)} cases match the official tokenizer (vocab {tok.vocab_size()}, BOS {tok.bos_id})")
 
 # the 2B ships the same tokenizer files, so the 0.8B's answer keys cover it too
 same = all(open(f"models/qwen3.5-2b/{f}", "rb").read() == open(f"models/qwen3.5-0.8b/{f}", "rb").read()
