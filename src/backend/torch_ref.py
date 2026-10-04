@@ -28,6 +28,9 @@ class TorchBackend:
     def rms_norm(self, x, w, eps):
         return ops.rms_norm(x, w, eps)
 
+    def layer_norm(self, x, w, eps):
+        return ops.layer_norm(x, w, eps)
+
     def rope(self, x, positions, theta):
         return ops.rope(x, positions, theta)
 

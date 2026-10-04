@@ -63,7 +63,9 @@ check("policy groups: checkpoint component and fused names map to one group id (
       and policy_group(CK + "layers.5.linear_attn.in_proj_z.weight") == policy_group("layers.5.linear_attn.in_proj.weight")
       == "layers.5.linear_in"
       and policy_group(CK + "layers.3.mlp.gate_proj.weight") == policy_group("layers.3.mlp.gate_up.weight") == "layers.3.mlp_in"
-      and policy_group(CK + "layers.3.mlp.down_proj.weight") == "layers.3.mlp.down_proj.weight")
+      and policy_group(CK + "layers.3.mlp.down_proj.weight") == "layers.3.mlp.down_proj.weight"
+      and policy_group("model.layers.3.self_attn.k_proj.weight") == policy_group("layers.3.self_attn.qkv.weight")
+      == "layers.3.attn_in")                                          # Cohere2 (Tiny Aya): prefix model., fused qkv
 keep = frozenset({"layers.3.self_attn.qkvg.weight", "layers.0.linear_attn.in_proj.weight"})
 check("a kept fused tensor keeps ALL its components int8 (q, k, v; in_proj_qkv, z, b, a); others stay int4",
       {scheme_for(f"{CK}layers.3.self_attn.{c}_proj.weight", "int4", keep) for c in "qkv"}

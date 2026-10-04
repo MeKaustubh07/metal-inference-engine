@@ -75,7 +75,7 @@ def quantize(w: torch.Tensor, scheme: str, block: int = BLOCK) -> QuantTensor:
 
 _GROUPS = [  # checkpoint component / model fused-tensor suffix -> the fused group it belongs to
     (("self_attn.q_proj.weight", "self_attn.k_proj.weight", "self_attn.v_proj.weight",
-      "self_attn.qkvg.weight"), "attn_in"),
+      "self_attn.qkvg.weight", "self_attn.qkv.weight"), "attn_in"),     # Qwen3.5's qkvg, Cohere2's qkv
     (("mlp.gate_proj.weight", "mlp.up_proj.weight", "mlp.gate_up.weight"), "mlp_in"),
     (("linear_attn.in_proj_qkv.weight", "linear_attn.in_proj_z.weight", "linear_attn.in_proj_b.weight",
       "linear_attn.in_proj_a.weight", "linear_attn.in_proj.weight"), "linear_in"),
@@ -111,6 +111,14 @@ def load_policy(path: str | None) -> frozenset:
     if not path:
         return frozenset()
     return frozenset(policy_group(n) for n in json.load(open(path))["keep_int8"])
+
+
+def select_rows(w, idx: torch.Tensor):
+    """Rows `idx` of a plain or quantized weight (quantization blocks never cross rows)."""
+    if isinstance(w, QuantTensor):
+        mins = w.mins[idx] if w.mins is not None else None
+        return QuantTensor(w.scheme, w.data[idx], w.scales[idx], (len(idx), w.shape[1]), w.block, mins)
+    return w[idx]
 
 
 def concat_rows(parts: list) -> "QuantTensor | torch.Tensor":

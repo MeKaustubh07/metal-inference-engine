@@ -83,5 +83,6 @@ def load_engine(name: str, backend: str = "metal", weights_file: str | None = No
     be = make_backend(backend, str(ROOT / p) if (p := spec.get("policy")) else None)
     weights = QtFile(weights_file) if weights_file else open_weights(str(d / spec["weights"]))
     model = model_cls(cfg, weights, be)
+    caps = [c for c in (spec.get("max_model_len"), getattr(model, "max_positions", None)) if c]
     return Engine(name, model, tok, set(spec["eos"]), chat_style(spec, d), spec["sampling"],
-                  spec.get("max_model_len"), spec.get("thinking", False))
+                  min(caps) if caps else None, spec.get("thinking", False))

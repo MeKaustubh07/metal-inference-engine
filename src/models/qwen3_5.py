@@ -12,19 +12,11 @@ import torch
 import ops
 from backend.torch_ref import TorchBackend
 from config import Qwen35Config
-from quant import QuantTensor, concat_rows
+from quant import concat_rows, select_rows
 from models.packing import Segment, advance_all, pack, reserve_all
 from state import ContiguousKVCache, HybridPool, HybridState, PagedKVPool, PagedSequence
 
 P = "model.language_model."
-
-
-def _rows(w, idx: torch.Tensor):
-    """Select rows of a plain or quantized weight (quantization blocks never cross rows)."""
-    if isinstance(w, QuantTensor):
-        mins = w.mins[idx] if w.mins is not None else None
-        return QuantTensor(w.scheme, w.data[idx], w.scales[idx], (len(idx), w.shape[1]), w.block, mins)
-    return w[idx]
 
 
 class Qwen35Model:
@@ -93,8 +85,8 @@ class Qwen35Model:
         def build():
             wq = self.weights.get(P + p + "q_proj.weight")
             rows = torch.arange(2 * Hq * d).view(Hq, 2, d)
-            return concat_rows([_rows(wq, rows[:, 0].flatten()), self.weights.get(P + p + "k_proj.weight"),
-                                self.weights.get(P + p + "v_proj.weight"), _rows(wq, rows[:, 1].flatten())])
+            return concat_rows([select_rows(wq, rows[:, 0].flatten()), self.weights.get(P + p + "k_proj.weight"),
+                                self.weights.get(P + p + "v_proj.weight"), select_rows(wq, rows[:, 1].flatten())])
         return self._fused(p + "qkvg.weight", build)
 
     def full_attention(self, i: int, x, positions, segs: list[Segment], residual):

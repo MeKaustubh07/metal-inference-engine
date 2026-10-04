@@ -75,7 +75,9 @@ class Scheduler:
             raise ValueError("prefill_chunk must be at least 1")
         if not 0 <= batch_wait_ms <= 1000:                    # also rejects NaN and inf (a wait that long raises)
             raise ValueError("batch_wait_ms must be between 0 and 1000")
-        self.max_batch, self.max_waiting, self.max_model_len = max_batch, max_waiting, max_model_len
+        cap = getattr(engine, "max_model_len", None)          # a model's own limit (Tiny Aya: its sliding window)
+        self.max_batch, self.max_waiting = max_batch, max_waiting
+        self.max_model_len = min(max_model_len, cap) if cap else max_model_len
         self.prefill_chunk = prefill_chunk
         self.batch_wait = batch_wait_ms / 1e3
         self.pool = self.model.new_paged_pool(kv_blocks, block_size, max_seqs=max(max_batch, 2))

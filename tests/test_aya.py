@@ -66,7 +66,7 @@ with tempfile.TemporaryDirectory() as tmp:
                  {"rope_scaling": {"type": "linear", "factor": 2.0}}, {"head_dim": 256}, {"model_type": "cohere"},
                  {"rope_parameters": {"type": "linear", "factor": 2.0, "rope_theta": 50000}},   # the legacy key
                  {"rope_parameters": {"rope_type": "dynamic", "factor": 2.0}}, {"sliding_window": 0},
-                 {"sliding_window": None}, {"use_embedding_sharing": False}):
+                 {"sliding_window": None}, {"use_embedding_sharing": False}, {"tie_word_embeddings": False}):
         try:
             Cohere2Config.from_json(variant(**edit)); check(f"refuses {edit}", False)
         except ValueError:

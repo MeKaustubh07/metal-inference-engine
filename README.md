@@ -119,8 +119,9 @@ scripts/.venv/bin/python scripts/run_tests.py
 ```
 
 `--quick` skips the cache, quantization, Qwen3.5, serving, prefill and decision suites (it runs tokenizer, aya,
-sampling, paged, kernels and native). The 13 suites cover the tokenizer (both models vs HF), Tiny Aya's files (config,
-sharded weights, chat template, registry, server routing; no model yet), sampling (incl. batched == per-request), the hybrid cache
+cohere2, sampling, paged, kernels and native). The 14 suites cover the tokenizer (both models vs HF), Tiny Aya's files
+(config, sharded weights, chat template, registry, server routing), the Cohere2 model vs HF on small random models
+(every layer, greedy, caches, batching, the sliding-window guard), sampling (incl. batched == per-request), the hybrid cache
 (cached == uncached, KV and DeltaNet byte accounting, MPS fp32/bf16 and Metal), paged state (isolation, running out
 of blocks or state slots), kernels, native runtime, quantization, Qwen3.5-0.8B vs HF fp32 (every layer),
 Qwen3.5-2B (bf16/INT8/INT4), the server (batched == sequential, preemption, streaming, 429, cancellation, drain)
@@ -158,7 +159,7 @@ src/weight_loader.py   safetensors mmap, sharded index  src/state.py        KV c
 src/tokenizer.py       byte-level BPE                   src/quant.py        INT8/INT4, policy, .qt files
 src/chat.py            ChatML, model Jinja templates    src/sampler.py      temperature/top-k/top-p/repetition
 src/config.py          Qwen35Config, Cohere2Config
-src/models/            Qwen3.5 (hybrid), packed prefill src/engine.py       model registry, load_engine
+src/models/            Qwen3.5, Cohere2, packed prefill src/engine.py       model registry, load_engine
 src/backend/           protocol, torch reference, Metal src/kernels/        *.metal kernels
 src/native/            Objective-C++ Metal runtime      src/server/         scheduler, API, metrics
 scripts/               goldens, bench, quantize, calibrate, serve, loadgen, repl, run_tests

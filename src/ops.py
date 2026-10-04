@@ -15,6 +15,15 @@ def rms_norm(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
     return (x32 / rms) * weight.float()                 # broadcast weight across tokens
 
 
+def layer_norm(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
+    """LayerNorm without bias (Cohere2 / Tiny Aya): subtract each token's mean, scale to unit variance, then
+    per-channel weight. Unlike RMSNorm, the mean is removed first. Same operation order as transformers, in fp32."""
+    x32 = x.float()
+    centered = x32 - x32.mean(dim=-1, keepdim=True)
+    variance = centered.pow(2).mean(dim=-1, keepdim=True)
+    return weight.float() * (centered * torch.rsqrt(variance + eps))
+
+
 def rope(x: torch.Tensor, positions: torch.Tensor, theta: float) -> torch.Tensor:
     """Rotary position embedding: rotate pairs of numbers by a position-dependent angle.
 

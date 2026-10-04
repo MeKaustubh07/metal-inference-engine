@@ -87,6 +87,8 @@ class Cohere2Config:
         layer_types = list(c["layer_types"])
         if len(layer_types) != c["num_hidden_layers"] or set(layer_types) - {"sliding_attention", "full_attention"}:
             bad["layer_types"] = layer_types
+        if c.get("tie_word_embeddings", True) is not True:  # the head is the embedding: an untied lm_head
+            bad["tie_word_embeddings"] = c["tie_word_embeddings"]     # would be ignored, so refuse it
         sw = c.get("sliding_window")
         if not isinstance(sw, int) or isinstance(sw, bool) or sw <= 0:
             bad["sliding_window"] = sw

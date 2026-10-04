@@ -205,6 +205,16 @@ state instead.
 | registry, BOS policy | `2f664f4` | stops 3 / 6 / 261001, the card's sampling, a 4096 cap (the sliding window); raw prompts get BOS, chat prompts and decision options do not |
 | review fixes | after `2f664f4` | `\b` with Oniguruma's word characters (a Persian number before ZWNJ, `۱۹۷۰‌ها`, was grouped differently); template errors 400 not 500; `enable_thinking` refused for Tiny Aya (it returned an empty reply); legacy rope `"type"` and invalid windows refused; vocab and stop-id guard at load; a licence guard that catches rewrapped copies. Tokenizers 191/191, `test_aya` 40/40 |
 
+## Porting Tiny Aya, M2: the model on the CPU (2026-10-05)
+
+| check (`tests/test_cohere2.py`, random 8-layer models, 8 query / 2 KV heads, fp32 CPU) | result |
+|---|---|
+| every layer, final norm and logits vs HF `Cohere2ForCausalLM` | within 1.5e-6 relative; with eps 1.0 (so every norm's eps matters) 2.6e-6 |
+| interleaved RoPE by reordering q/k rows at load (no new kernel) | exact up to float rounding; without the reordering the logits are off by 75% |
+| greedy, cached == uncached, paged == contiguous, batched / packed == alone | 12 greedy tokens identical to HF; 2.9e-6; bit-identical; 2.5e-6 |
+| the sliding-window guard (window 16) | 16 positions exact; HF's window starts to matter at 17 (logits move 6.6%); fresh, continuing, packed and batched requests past it are refused with no state moved and no KV block taken |
+| review: 3 lenses + 3 verifiers; 63 planted bugs | no model bug; 52 planted bugs caught, 11 missed (3 harmless); new checks catch the 8 others; untied heads refused; Cohere2's fused qkv joins the INT4 policy groups; the scheduler applies the model's own length cap |
+
 ## Review workflows run
 
 | week | agents | findings → confirmed | notable |
@@ -228,3 +238,4 @@ state instead.
 | decision endpoint | 41 | 19 → 9 confirmed + 1 split, fixed | prefix scoring, unchunked prefill, jobs blocking decode, abandoned jobs |
 | Tiny Aya research | 10 | 4 reports + 5 checks; 1 report off-task (its checker supplied the facts) | the official config recovered by hash; KV is 144 KiB/token (6x Qwen) in fp32; the old tokenizer would drop all non-digit text |
 | Tiny Aya M1 | 8 | 30 → 25 confirmed: 4 deferred to M2 / M4 / M6, 2 documented as rare known differences, the rest fixed | `\b` vs Oniguruma; template errors were 500; `enable_thinking` on Tiny Aya gave an empty reply; the legacy rope key was accepted |
+| Tiny Aya M2 | 6 | 11 → 8 confirmed (7 distinct), all fixed; 3 refuted, 2 of them added anyway as cheap checks | no model bug; untied heads accepted; the INT4 policy missed the fused qkv; the length cap only in create_app; test gaps found by 63 planted bugs |

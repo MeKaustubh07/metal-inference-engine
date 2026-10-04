@@ -57,3 +57,7 @@ class Backend(Protocol):
 
     def paged_attention(self, q, k_pool, v_pool, tables, lens, block_size) -> torch.Tensor:
         """Batched decode attention reading a paged KV pool in place: q [B, Hq, d] -> [B, Hq, d]."""
+
+    # ---- protocol v3, added for Cohere2 (Tiny Aya)
+    def layer_norm(self, x: torch.Tensor, w: torch.Tensor, eps: float) -> torch.Tensor:
+        """LayerNorm without bias over the last dim: (x - mean) / sqrt(var + eps) * w."""
