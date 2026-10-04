@@ -161,5 +161,28 @@ repo = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-sta
 check(f"the template's preamble text is in none of the repo's {len(repo)} files (it is read at load time)",
       not any(preamble[20:120] in open(f, encoding="utf-8", errors="ignore").read() for f in repo if os.path.isfile(f)))
 
+# 6. the engine registry entry and the BOS policy at every place a prompt is tokenized
+from decision import option_ids, prompt_ids
+from engine import MODELS, ROOT, chat_style, load_engine
+
+spec = MODELS["tiny-aya-global"]
+stops = {i: tok.id_to_token[i] for i in spec["eos"]}
+check(f"registry: index weights, chat from the model's template, stops {stops}",
+      os.path.exists(ROOT / spec["dir"] / spec["weights"]) and isinstance(chat_style(spec, ROOT / spec["dir"]), TemplateChat)
+      and list(stops.values()) == ["<EOS_TOKEN>", "<|END_OF_TURN_TOKEN|>", "<|END_RESPONSE|>"])
+check(f"registry: the card's sampling {spec['sampling']}; max_model_len {spec['max_model_len']} <= the sliding window",
+      spec["sampling"] == dict(temperature=0.1, top_p=0.95, top_k=50, repetition_penalty=1.0)
+      and spec["max_model_len"] <= cfg.sliding_window)
+try:
+    load_engine("tiny-aya-global"); check("load_engine refuses until the cohere2 model class exists", False)
+except NotImplementedError:
+    check("load_engine refuses until the cohere2 model class exists", True)
+raw, chatted = prompt_ids(tok, "", "Is the sky blue?", False, aya), prompt_ids(tok, "", "Is the sky blue?", True, aya)
+opts = [option_ids(tok, o, c) for o in ("Yes", " No") for c in (True, False)]
+check("decide: a raw prompt gets one BOS, a chat prompt one (from its template), an option none",
+      raw[0] == 2 and raw.count(2) == 1 and chatted[0] == 2 and chatted.count(2) == 1 and all(2 not in o for o in opts))
+check("a raw prompt's ids == HF's default encode (BOS included)",
+      tok.encode("The capital of France is", add_bos=True) == hf_tok("The capital of France is")["input_ids"])
+
 print(f"\n{sum(results)}/{len(results)} passed")
 sys.exit(0 if all(results) else 1)

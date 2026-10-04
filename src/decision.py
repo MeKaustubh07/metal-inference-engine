@@ -146,17 +146,17 @@ def score_options(model, context_ids: list[int], options: list[list[int]], vocab
 KINDS = ("choice", "boolean", "score")
 
 
-def prompt_ids(tokenizer, context: str, question: str, chat: bool, chat_style: str) -> list[int]:
+def prompt_ids(tokenizer, context: str, question: str, chat: bool, chat_style) -> list[int]:
     """The shared context: chat-formatted as the user turn, ending where the assistant's answer begins."""
     text = f"{context}\n\n{question}" if context else question
     if chat:
-        return tokenizer.encode(format_chat([{"role": "user", "content": text}], style=chat_style))
-    return tokenizer.encode(text + "\nAnswer:")
+        return tokenizer.encode(format_chat([{"role": "user", "content": text}], style=chat_style))  # writes BOS
+    return tokenizer.encode(text + "\nAnswer:", add_bos=True)
 
 
 def option_ids(tokenizer, option: str, chat: bool) -> list[int]:
     """An option's tokens where the answer begins: at the start of the assistant turn (chat), or after a space
-    following a plain "Answer:"."""
+    following a plain "Answer:". A continuation, so never a BOS."""
     if chat:
         return tokenizer.encode(option)
     return tokenizer.encode(option if option[:1].isspace() else " " + option)

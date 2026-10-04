@@ -129,6 +129,10 @@ class OutputFilter:
 def create_app(engine, max_batch: int = 8, max_waiting: int = 64, kv_blocks: int = 1024, max_model_len: int = 4096,
                drain_timeout: float = 2.0, prefill_chunk: int = 512, batch_wait_ms: float = 5.0,
                lock_weights: bool = False) -> FastAPI:
+    cap = getattr(engine, "max_model_len", None)
+    if cap and max_model_len > cap:                     # a model's own limit wins (Tiny Aya: its sliding window)
+        log.info(f"max_model_len {max_model_len} -> {cap}, {engine.name}'s limit")
+        max_model_len = cap
     metrics = Metrics()
     sched = Scheduler(engine, metrics, max_batch=max_batch, max_waiting=max_waiting, kv_blocks=kv_blocks,
                       max_model_len=max_model_len, prefill_chunk=prefill_chunk, batch_wait_ms=batch_wait_ms,
@@ -156,8 +160,8 @@ def create_app(engine, max_batch: int = 8, max_waiting: int = 64, kv_blocks: int
         body = json.dumps({"detail": jsonable_encoder(exc.errors())}, ensure_ascii=True, default=str)
         return Response(body, status_code=422, media_type="application/json")
 
-    async def submit(prompt: str, body: Sampling, default_max: int):
-        ids = await asyncio.to_thread(engine.tokenizer.encode, prompt)   # CPU work off the event loop
+    async def submit(prompt: str, body: Sampling, default_max: int, add_bos: bool):
+        ids = await asyncio.to_thread(engine.tokenizer.encode, prompt, add_bos)   # CPU work off the event loop
         params = SamplingParams(temperature=body.temperature, top_k=body.top_k, top_p=body.top_p,
                                 repetition_penalty=body.repetition_penalty, seed=body.seed)
         try:
@@ -278,7 +282,7 @@ def create_app(engine, max_batch: int = 8, max_waiting: int = 64, kv_blocks: int
 
     @app.post("/v1/completions")
     async def completions(body: CompletionBody, http: HTTPRequest):
-        req, n = await submit(body.prompt, body, 128)
+        req, n = await submit(body.prompt, body, 128, add_bos=True)      # raw text: BOS first, if the model has one
         out = respond(req, n, False, body, http)
         return out if body.stream else await out
 
@@ -293,7 +297,7 @@ def create_app(engine, max_batch: int = 8, max_waiting: int = 64, kv_blocks: int
             raise HTTPException(400, f"messages exceed {MAX_PROMPT_CHARS} characters in total")
         prompt = format_chat([m.model_dump() for m in body.messages], style=engine.chat_style,
                              enable_thinking=body.enable_thinking)
-        req, n = await submit(prompt, body, 256)
+        req, n = await submit(prompt, body, 256, add_bos=False)          # the chat template writes BOS itself
         out = respond(req, n, True, body, http, body.enable_thinking)
         return out if body.stream else await out
 

@@ -15,7 +15,7 @@ def _next_logits(model, tokenizer, ids_new: list[int], state) -> torch.Tensor:
 def generate_greedy(model, tokenizer, prompt: str, max_new_tokens: int, eos_ids: set[int],
                     use_cache: bool = True) -> list[int]:
     """Always take the highest-scoring next token."""
-    ids = tokenizer.encode(prompt)
+    ids = tokenizer.encode(prompt, add_bos=True)                      # raw text: BOS first, if the model has one
     new: list[int] = []
     if use_cache:
         state = model.new_state(len(ids) + max_new_tokens)
