@@ -41,7 +41,8 @@ for k, (a, b) in pairs.items():
 full = [i for i in range(cfg.num_hidden_layers) if not cfg.is_sliding(i)]
 check("36 layers, 16/4 heads x 128, window 4096, full attention at 3, 7, ..., 35, logit_scale 1.0, tied",
       (cfg.num_hidden_layers, cfg.num_attention_heads, cfg.num_key_value_heads, cfg.head_dim, cfg.sliding_window)
-      == (36, 16, 4, 128, 4096) and full == list(range(3, 36, 4)) and cfg.logit_scale == 1.0 and cfg.tie_word_embeddings)
+      == (36, 16, 4, 128, 4096) and full == list(range(3, 36, 4))
+      and cfg.logit_scale == 1.0 and cfg.tie_word_embeddings)
 
 # 2. the traps: settings whose defaults differ, and settings this engine does not implement
 raw = json.load(open(f"{D}/config.json"))
@@ -107,6 +108,58 @@ with tempfile.TemporaryDirectory() as tmp:
         check("an index that disagrees with its files is refused", False)
     except ValueError:
         check("an index that disagrees with its files is refused", True)
+
+# 5. the chat template: the model's own Jinja template, rendered by TemplateChat, against apply_chat_template
+from transformers import AutoTokenizer
+from chat import TemplateChat, format_chat
+from tokenizer import Tokenizer
+
+hf_tok, tok = AutoTokenizer.from_pretrained(D), Tokenizer(f"{D}/tokenizer.json")
+aya = TemplateChat(f"{D}/tokenizer_config.json")
+U, A, S = "user", "assistant", "system"
+convs = [[(U, "What is the capital of France?")],
+         [(S, "You are terse."), (U, "Hi")],
+         [(S, ""), (U, "Hi")],                                                  # an empty system message adds nothing
+         [(U, "2+2?"), (A, "4"), (U, "and 3+3?")],
+         [(S, "  Be brief. \n"), (U, "  hi \n")],                               # no stripping: whitespace is kept
+         [(U, "first"), (S, "late system"), (A, "ok"), (U, "next")],            # the first system message anywhere
+         [(S, "Same."), (U, "a"), (A, "b"), (S, "Same."), (U, "c")],            # a repeat of it is skipped
+         [(S, "One."), (U, "a"), (A, "b"), (S, "Two."), (U, "c")],              # a different one is its own turn
+         [(U, "a"), ("chatbot", "b"), (U, "c")],                                # "chatbot" means assistant
+         [(U, "नमस्ते, आप कैसे हैं? 12345"), (A, "मैं ठीक हूँ।\n\n- एक\n- दो"), (U, "مرحبا 你好 🚀")]]
+convs = [[{"role": r, "content": c} for r, c in conv] for conv in convs]
+same_text = same_ids = True
+for conv in convs:
+    for gen in (True, False):
+        ours = format_chat(conv, add_generation_prompt=gen, style=aya)
+        ref = hf_tok.apply_chat_template(conv, tokenize=False, add_generation_prompt=gen)
+        ref_ids = hf_tok.apply_chat_template(conv, tokenize=True, add_generation_prompt=gen)
+        ref_ids = list(ref_ids["input_ids"] if hasattr(ref_ids, "keys") else ref_ids)
+        same_text &= ours == ref
+        same_ids &= tok.encode(ours) == ref_ids                     # the template writes BOS itself: add_bos=False
+        if ours != ref:
+            print("      differs:", [m["role"] for m in conv], "generation prompt:", gen)
+check(f"chat text == apply_chat_template on {len(convs)} conversations x 2 (with and without generation prompt)",
+      same_text)
+check("their token ids are equal too, with a single BOS at the start", same_ids)
+one = tok.encode(format_chat(convs[0], style=aya))
+print(f"      a one-line question is {len(one)} prompt tokens, starting {one[:3]} (BOS {one.count(tok.bos_id)}x)")
+for bad, why in (([(U, "a"), (U, "b")], "two user turns in a row"), ([(A, "a"), (U, "b")], "an assistant turn first")):
+    conv = [{"role": r, "content": c} for r, c in bad]
+    errors = []
+    for fn in (lambda: format_chat(conv, style=aya), lambda: hf_tok.apply_chat_template(conv, tokenize=False)):
+        try:
+            fn(); errors.append(None)
+        except Exception as e:                                       # ours: ValueError; transformers: TemplateError
+            errors.append(type(e).__name__)
+    check(f"{why}: refused by both (ours {errors[0]}, transformers {errors[1]})",
+          errors[0] == "ValueError" and errors[1])
+preamble = hf_tok.apply_chat_template(convs[0], tokenize=False).split("<|SYSTEM_TOKEN|>", 1)[1][:200]
+import subprocess
+repo = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"], capture_output=True,
+                      text=True, check=True).stdout.split()             # what a commit can contain (not models/)
+check(f"the template's preamble text is in none of the repo's {len(repo)} files (it is read at load time)",
+      not any(preamble[20:120] in open(f, encoding="utf-8", errors="ignore").read() for f in repo if os.path.isfile(f)))
 
 print(f"\n{sum(results)}/{len(results)} passed")
 sys.exit(0 if all(results) else 1)
