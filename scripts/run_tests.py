@@ -18,7 +18,7 @@ SLOW = {"test_cache", "test_quant", "test_qwen35", "test_qwen35_2b", "test_serve
 def main() -> None:
     quick = "--quick" in sys.argv
     save = Path(sys.argv[sys.argv.index("--save") + 1]) if "--save" in sys.argv else None
-    failed, summary = [], []
+    failed, summary, skipped = [], [], 0
     def say(line: str) -> None:
         print(line); summary.append(line)
     start = time.perf_counter()
@@ -27,15 +27,18 @@ def main() -> None:
             continue
         t0 = time.perf_counter()
         r = subprocess.run([sys.executable, f"tests/{name}.py"], cwd=ROOT, capture_output=True, text=True)
-        passes, fails = r.stdout.count("PASS"), r.stdout.count("FAIL")
+        passes, fails, skips = r.stdout.count("PASS"), r.stdout.count("FAIL"), r.stdout.count("SKIP")
+        skipped += skips
         status = "ok  " if r.returncode == 0 else "FAIL"
-        say(f"{status} {name:16s} {passes:3d} pass {fails:2d} fail  {time.perf_counter() - t0:6.1f}s")
+        say(f"{status} {name:16s} {passes:3d} pass {fails:2d} fail  {time.perf_counter() - t0:6.1f}s"
+            + (f"  ({skips} skipped: needs files not in the repo)" if skips else ""))
         if save:
             (save / f"{name}.txt").write_text(r.stdout)
         if r.returncode != 0:
             failed.append(name)
             say("\n".join(l for l in r.stdout.splitlines() if "FAIL" in l)[:2000] + "\n" + r.stderr[-1500:])
-    say(f"\n{'ALL PASSED' if not failed else 'FAILED: ' + ', '.join(failed)}  ({time.perf_counter() - start:.0f} s in all)")
+    verdict = "ALL PASSED" if not failed else "FAILED: " + ", ".join(failed)
+    say(f"\n{verdict}{f', {skipped} skipped' if skipped else ''}  ({time.perf_counter() - start:.0f} s in all)")
     if save:
         commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
         head = f"run_tests.py {' '.join(sys.argv[1:])} at {time.strftime('%Y-%m-%d %H:%M')} on commit {commit}"

@@ -70,23 +70,31 @@ class Cohere2Config:
     @classmethod
     def from_json(cls, path: str) -> "Cohere2Config":
         c = json.load(open(path))
-        # transformers ignores the keys below and always builds the same graph; refuse configs that ask for anything
-        # else, so a model this code would get wrong fails here instead of producing wrong text
+        # The settings this engine implements. Some change transformers' graph (attention_bias, hidden_act,
+        # rope_scaling); the original-Cohere keys (use_parallel_block, rotary_pct, ...) are ignored by transformers,
+        # which always builds the Tiny Aya graph. Either way a config asking for anything else is refused here,
+        # instead of producing wrong text.
         want = {"model_type": "cohere2", "use_parallel_block": True, "use_qk_norm": False, "attention_bias": False,
-                "rotary_pct": 1.0, "position_embedding_type": "rope_gptj", "rope_scaling": None, "hidden_act": "silu"}
+                "rotary_pct": 1.0, "position_embedding_type": "rope_gptj", "rope_scaling": None, "hidden_act": "silu",
+                "use_gated_activation": True, "use_parallel_embedding": False, "use_embedding_sharing": True}
         bad = {k: c.get(k) for k, v in want.items() if k in c and c[k] != v}
         if c.get("model_type") != "cohere2":
             bad["model_type"] = c.get("model_type")
         heads = c["num_attention_heads"]
-        head_dim = c["hidden_size"] // heads              # transformers recomputes it, whatever config.json says
-        if c.get("head_dim", head_dim) != head_dim:
+        head_dim = c["hidden_size"] // heads              # transformers takes config.json's head_dim when present;
+        if c.get("head_dim", head_dim) != head_dim:       # this engine supports only hidden_size // heads
             bad["head_dim"] = c["head_dim"]
         layer_types = list(c["layer_types"])
         if len(layer_types) != c["num_hidden_layers"] or set(layer_types) - {"sliding_attention", "full_attention"}:
             bad["layer_types"] = layer_types
-        # transformers 5 nests rope_theta under rope_parameters; older files keep it at the top level
+        sw = c.get("sliding_window")
+        if not isinstance(sw, int) or isinstance(sw, bool) or sw <= 0:
+            bad["sliding_window"] = sw
+        # transformers 5 nests rope_theta under rope_parameters (older files keep it at the top level), and reads the
+        # scaling type from "rope_type", or else the legacy "type"
         rope = c.get("rope_parameters") or {}
-        if rope.get("rope_type", "default") != "default":
+        rope_type = rope.get("rope_type", rope.get("type", "default"))
+        if rope_type != "default" or set(rope) - {"rope_type", "type", "rope_theta"}:
             bad["rope_parameters"] = rope
         if bad:
             raise ValueError(f"unsupported Cohere2 settings: {bad}")

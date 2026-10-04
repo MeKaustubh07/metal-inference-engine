@@ -43,9 +43,10 @@ against Hugging Face `transformers`.
 
 | component | file | responsibility |
 |---|---|---|
-| loader | `src/weight_loader.py` | parse the safetensors header, mmap the file, hand out zero-copy bf16 tensor views |
-| tokenizer | `src/tokenizer.py` | byte-level BPE from `tokenizer.json` (GPT-2 byte alphabet, merge ranks, special tokens first, NFC) |
-| chat template | `src/chat.py` | Qwen3.5 ChatML incl. thinking-mode rules (unknown styles raise) |
+| loader | `src/weight_loader.py` | parse the safetensors header, mmap the file, hand out zero-copy bf16 tensor views; a sharded checkpoint through its `model.safetensors.index.json` |
+| config | `src/config.py` | `Qwen35Config`, `Cohere2Config` (refuses settings the engine does not implement) |
+| tokenizer | `src/tokenizer.py` | byte-level BPE from `tokenizer.json` (GPT-2 byte alphabet, merge ranks, special tokens first, NFC if the file asks, every regex Split, BOS from the post-processor) |
+| chat template | `src/chat.py` | Qwen3.5 ChatML incl. thinking-mode rules; or the model's own Jinja template, rendered as transformers renders it (Tiny Aya) |
 | model | `src/models/qwen3_5.py` | hybrid layers, fused projections, partial RoPE, output gate, DeltaNet prefill and decode |
 | state | `src/state.py` | contiguous and paged KV caches, block allocator, `HybridState` |
 | kernels | `src/kernels/*.metal` | matvec (bf16, INT8, INT4, batched), RMSNorm, RoPE, decode attention, DeltaNet step, SwiGLU |
@@ -200,7 +201,7 @@ the same route above 32 rows, so a prompt packed with others keeps fp32 activati
 - **Invariants**: cached == uncached; paged == contiguous; batched == sequential (greedy tokens identical, logits
   within 6e-5 in fp32 on the CPU; bit-identical in bf16 on Metal); preempted == uninterrupted; fused kernels ==
   reference ops; batched kernels == per-row kernels.
-- `scripts/run_tests.py` runs all 12 suites and exits nonzero on any failure.
+- `scripts/run_tests.py` runs all 13 suites, reports any that skipped, and exits nonzero on any failure.
 
 ## 8. Operations
 

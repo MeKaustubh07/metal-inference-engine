@@ -1,10 +1,14 @@
-"""Tiny Aya Global (Cohere2) files: Cohere2Config against transformers' own config class, and the sharded weights
-against the safetensors library. Needs the gated files in models/tiny-aya-global (see docs/tiny-aya-plan.md)."""
+"""Tiny Aya Global (Cohere2), everything before the model itself: Cohere2Config against transformers' config class
+(and the configs it must refuse), the sharded weights against the safetensors library (and a corrupt index), the
+model's own chat template against apply_chat_template, the registry entry and its guards, the BOS policy where prompts
+are tokenized, the server with a stand-in scheduler, and a guard that none of the gated files' content is in the repo.
+Needs the gated files in models/tiny-aya-global (see docs/tiny-aya-plan.md); otherwise it prints SKIP."""
 import json
 import os
 import sys
 import tempfile
 
+os.environ.setdefault("HF_HUB_OFFLINE", "1")      # everything is local: transformers must not query the Hub
 import torch
 from safetensors import safe_open
 from transformers import AutoConfig
@@ -59,7 +63,10 @@ with tempfile.TemporaryDirectory() as tmp:
     check("rope_theta nested under rope_parameters (transformers 5 files) is read too",
           Cohere2Config.from_json(nested).rope_theta == 50000.0)
     for edit in ({"use_qk_norm": True}, {"position_embedding_type": "rope"}, {"use_parallel_block": False},
-                 {"rope_scaling": {"type": "linear", "factor": 2.0}}, {"head_dim": 256}, {"model_type": "cohere"}):
+                 {"rope_scaling": {"type": "linear", "factor": 2.0}}, {"head_dim": 256}, {"model_type": "cohere"},
+                 {"rope_parameters": {"type": "linear", "factor": 2.0, "rope_theta": 50000}},   # the legacy key
+                 {"rope_parameters": {"rope_type": "dynamic", "factor": 2.0}}, {"sliding_window": 0},
+                 {"sliding_window": None}, {"use_embedding_sharing": False}):
         try:
             Cohere2Config.from_json(variant(**edit)); check(f"refuses {edit}", False)
         except ValueError:
@@ -154,12 +161,15 @@ for bad, why in (([(U, "a"), (U, "b")], "two user turns in a row"), ([(A, "a"), 
             errors.append(type(e).__name__)
     check(f"{why}: refused by both (ours {errors[0]}, transformers {errors[1]})",
           errors[0] == "ValueError" and errors[1])
-preamble = hf_tok.apply_chat_template(convs[0], tokenize=False).split("<|SYSTEM_TOKEN|>", 1)[1][:200]
-import subprocess
-repo = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"], capture_output=True,
-                      text=True, check=True).stdout.split()             # what a commit can contain (not models/)
-check(f"the template's preamble text is in none of the repo's {len(repo)} files (it is read at load time)",
-      not any(preamble[20:120] in open(f, encoding="utf-8", errors="ignore").read() for f in repo if os.path.isfile(f)))
+qwen_dir = "models/qwen3.5-0.8b"
+if os.path.exists(f"{qwen_dir}/tokenizer_config.json"):            # TemplateChat is general: Qwen's template as well
+    from transformers import AutoTokenizer as _AT
+    qt, qhf = TemplateChat(f"{qwen_dir}/tokenizer_config.json"), _AT.from_pretrained(qwen_dir)
+    conv = convs[3]
+    check("TemplateChat on Qwen3.5's own template == apply_chat_template == the hand-written qwen3.5 style",
+          all(qt.render(conv, True, th) == qhf.apply_chat_template(conv, tokenize=False, add_generation_prompt=True,
+                                                                     enable_thinking=th)
+              == format_chat(conv, style="qwen3.5", enable_thinking=th) for th in (False, True)))
 
 # 6. the engine registry entry and the BOS policy at every place a prompt is tokenized
 from decision import option_ids, prompt_ids
@@ -167,8 +177,12 @@ from engine import MODELS, ROOT, chat_style, load_engine
 
 spec = MODELS["tiny-aya-global"]
 stops = {i: tok.id_to_token[i] for i in spec["eos"]}
-check(f"registry: index weights, chat from the model's template, stops {stops}",
-      os.path.exists(ROOT / spec["dir"] / spec["weights"]) and isinstance(chat_style(spec, ROOT / spec["dir"]), TemplateChat)
+check(f"vocab: {tok.vocab_size():,} contiguous ids (<= {cfg.vocab_size:,} output rows); every stop id survives the "
+      "cut of the logits to the vocab", tok.vocab_size() == max(tok.id_to_token) + 1 == 261_008
+      and tok.vocab_size() <= cfg.vocab_size and max(spec["eos"]) < tok.vocab_size())
+check(f"registry: index weights, chat from the model's template, no thinking mode, stops {stops}",
+      os.path.exists(ROOT / spec["dir"] / spec["weights"])
+      and isinstance(chat_style(spec, ROOT / spec["dir"]), TemplateChat) and not spec.get("thinking")
       and list(stops.values()) == ["<EOS_TOKEN>", "<|END_OF_TURN_TOKEN|>", "<|END_RESPONSE|>"])
 check(f"registry: the card's sampling {spec['sampling']}; max_model_len {spec['max_model_len']} <= the sliding window",
       spec["sampling"] == dict(temperature=0.1, top_p=0.95, top_k=50, repetition_penalty=1.0)
@@ -177,12 +191,107 @@ try:
     load_engine("tiny-aya-global"); check("load_engine refuses until the cohere2 model class exists", False)
 except NotImplementedError:
     check("load_engine refuses until the cohere2 model class exists", True)
-raw, chatted = prompt_ids(tok, "", "Is the sky blue?", False, aya), prompt_ids(tok, "", "Is the sky blue?", True, aya)
+plain = prompt_ids(tok, "", "Is the sky blue?", False, aya)
+chatted = prompt_ids(tok, "", "Is the sky blue?", True, aya)
 opts = [option_ids(tok, o, c) for o in ("Yes", " No") for c in (True, False)]
 check("decide: a raw prompt gets one BOS, a chat prompt one (from its template), an option none",
-      raw[0] == 2 and raw.count(2) == 1 and chatted[0] == 2 and chatted.count(2) == 1 and all(2 not in o for o in opts))
+      plain[0] == 2 and plain.count(2) == 1 and chatted[0] == 2 and chatted.count(2) == 1
+      and all(2 not in o for o in opts))
 check("a raw prompt's ids == HF's default encode (BOS included)",
       tok.encode("The capital of France is", add_bos=True) == hf_tok("The capital of France is")["input_ids"])
+
+# 7. the server, with a stand-in scheduler (no weights needed): the BOS policy per endpoint, the model's length cap,
+# conversations the template refuses, and enable_thinking on a model without a thinking mode
+import asyncio
+
+import httpx
+
+import server.app as app_module
+from engine import Engine
+from server.scheduler import QueueFull
+
+
+class RecordingScheduler:
+    """Takes the scheduler's place: records the ids each request would run, then answers "busy" (HTTP 429)."""
+    def __init__(self, engine, metrics, **kw):
+        self.max_model_len, self.prefill_chunk, self.lock_error, self.submitted = kw["max_model_len"], 512, None, []
+
+    def submit(self, ids, params, max_new, out=None):
+        self.submitted.append(list(ids))
+        raise QueueFull()
+
+    def shutdown(self, timeout):
+        pass
+
+
+app_module.Scheduler = RecordingScheduler
+eng = Engine("tiny-aya-global", None, tok, set(spec["eos"]), aya, spec["sampling"], spec["max_model_len"])
+app = app_module.create_app(eng, max_model_len=8192)
+sched = app.state.scheduler
+
+async def post(path, body):
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.post(path, json=body)
+        return r.status_code, r.text
+
+def chat(*msgs, **extra):
+    return asyncio.run(post("/v1/chat/completions", {"messages": [{"role": r, "content": c} for r, c in msgs],
+                                                      "max_tokens": 4, **extra}))
+
+check("create_app(max_model_len=8192) gives the scheduler the model's own cap, 4096", sched.max_model_len == 4096)
+code, _ = asyncio.run(post("/v1/completions", {"prompt": "Hi", "max_tokens": 4}))
+check(f"/v1/completions: raw text gets one BOS ({sched.submitted[-1]})",
+      code == 429 and sched.submitted[-1] == tok.encode("Hi", add_bos=True) and sched.submitted[-1].count(2) == 1)
+code, _ = chat((U, "Hi"))
+check(f"/v1/chat/completions: one BOS, from the template ({len(sched.submitted[-1])} prompt tokens)",
+      code == 429 and sched.submitted[-1] == tok.encode(format_chat([{"role": U, "content": "Hi"}], style=aya))
+      and sched.submitted[-1].count(2) == 1)
+for msgs, why in ((((U, "a"), (U, "b")), "two user turns"), (((S, "s"), (A, "x"), (U, "b")), "an assistant turn first")):
+    code, text = chat(*msgs)
+    check(f"/v1/chat/completions: {why} -> 400 from the template, not 500", code == 400 and "alternate" in text)
+code, text = chat((U, "Hi"), enable_thinking=True)
+check("/v1/chat/completions: enable_thinking on a model without a thinking mode -> 400", code == 400 and "thinking" in text)
+code, text = asyncio.run(post("/v1/decide", {"type": "boolean", "question": "Is it?", "context": "word " * 5000}))
+check("/v1/decide: a context past the model's 4096-token cap -> 400", code == 400 and "exceeds 4096" in text)
+
+# 8. licence guard: no copy of a gated file, and no copy of the template's text (however it is wrapped), in anything
+# a commit can contain: the working tree and the staged index
+import hashlib
+import re
+import subprocess
+
+def flat(t):
+    return " ".join(t.replace("\\n", " ").replace("\\r", " ").replace('\\"', '"').split())
+
+source = json.load(open(f"{D}/tokenizer_config.json"))["chat_template"][0]["template"]
+texts = [hf_tok.apply_chat_template(c, tokenize=False).split("<|SYSTEM_TOKEN|>", 1)[1].split("<|END_OF_TURN_TOKEN|>")[0]
+         for c in (convs[0], convs[1])]                                  # the rendered preamble, without and with
+texts += re.split(r"\{%.*?%\}|\{\{.*?\}\}|\{#.*?#\}", source, flags=re.S)    # a system turn; the literal text
+shingles = {f[i:i + 64] for f in map(flat, texts) for i in range(0, len(f) - 63, 16)}
+gated = {hashlib.sha256(open(f"{D}/{n}", "rb").read()).hexdigest() for n in os.listdir(D)   # the small files: the
+         if os.path.isfile(f"{D}/{n}") and os.path.getsize(f"{D}/{n}") < 64 << 20}           # shards are 6.7 GB
+paths = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"], capture_output=True,
+                       text=True, check=True).stdout.splitlines()
+index = [line.split("\t", 1) for line in subprocess.run(["git", "ls-files", "-s"], capture_output=True, text=True,
+                                                          check=True).stdout.splitlines()]
+blobs = [meta.split()[1] for meta, _ in index]
+staged = subprocess.run(["git", "cat-file", "--batch"], input=("\n".join(blobs) + "\n").encode(), capture_output=True,
+                        check=True).stdout
+names = [f for f in paths if os.path.isfile(f)] + [f"{path} (staged)" for _, path in index]
+contents, i = [open(f, "rb").read() for f in paths if os.path.isfile(f)], 0
+while i < len(staged):                                                   # "<sha> blob <size>\n<bytes>\n" per object
+    header_end = staged.index(b"\n", i)
+    size = int(staged[i:header_end].split()[2])
+    contents.append(staged[header_end + 1:header_end + 1 + size])
+    i = header_end + 2 + size
+def leaks(b):
+    text = flat(b.decode("utf-8", errors="ignore"))                     # flatten each file once
+    return hashlib.sha256(b).hexdigest() in gated or any(sh in text for sh in shingles)
+hits = [names[n] for n, b in enumerate(contents) if leaks(b)]
+if hits:
+    print("      gated content in:", hits)
+check(f"no gated file and none of {len(shingles)} 64-char pieces of the template's text in the {len(paths)} repo "
+      f"files or {len(blobs)} staged blobs", not hits and len(shingles) > 20)
 
 print(f"\n{sum(results)}/{len(results)} passed")
 sys.exit(0 if all(results) else 1)

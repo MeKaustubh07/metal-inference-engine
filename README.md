@@ -101,14 +101,26 @@ scripts/.venv/bin/python scripts/quantize.py models/qwen3.5-2b/model.safetensors
 scripts/build_native.sh && scripts/.venv/bin/python scripts/golden_qwen35.py && scripts/.venv/bin/python scripts/golden_qwen35.py models/qwen3.5-2b tests/golden_qwen35_2b bf16
 ```
 
+The Tiny Aya checks need its gated files (accept the terms on the model page, then download a pinned revision; see
+[`docs/tiny-aya-plan.md`](docs/tiny-aya-plan.md)) and a local answer key; without them they print SKIP:
+
+```bash
+scripts/.venv/bin/hf download CohereLabs/tiny-aya-global --revision af89d219b53ed9b13b8a4645f9c8028973510324 --local-dir models/tiny-aya-global
+```
+
+```bash
+scripts/.venv/bin/python scripts/golden_tokens.py models/tiny-aya-global tests/golden_tokens_aya.json
+```
+
 Then:
 
 ```bash
 scripts/.venv/bin/python scripts/run_tests.py
 ```
 
-`--quick` skips the cache, quantization, Qwen3.5, serving, prefill and decision suites (it runs tokenizer, sampling,
-paged, kernels and native). The 12 suites cover the tokenizer, sampling (incl. batched == per-request), the hybrid cache
+`--quick` skips the cache, quantization, Qwen3.5, serving, prefill and decision suites (it runs tokenizer, aya,
+sampling, paged, kernels and native). The 13 suites cover the tokenizer (both models vs HF), Tiny Aya's files (config,
+sharded weights, chat template, registry, server routing; no model yet), sampling (incl. batched == per-request), the hybrid cache
 (cached == uncached, KV and DeltaNet byte accounting, MPS fp32/bf16 and Metal), paged state (isolation, running out
 of blocks or state slots), kernels, native runtime, quantization, Qwen3.5-0.8B vs HF fp32 (every layer),
 Qwen3.5-2B (bf16/INT8/INT4), the server (batched == sequential, preemption, streaming, 429, cancellation, drain)
@@ -142,9 +154,10 @@ decoded ~4 tok/s, and `docker stop` drained an in-flight stream before exiting. 
 ## Layout
 
 ```
-src/weight_loader.py   safetensors mmap loader          src/state.py        KV caches, block allocator, HybridState
+src/weight_loader.py   safetensors mmap, sharded index  src/state.py        KV caches, block allocator, HybridState
 src/tokenizer.py       byte-level BPE                   src/quant.py        INT8/INT4, policy, .qt files
-src/chat.py            ChatML templates                 src/sampler.py      temperature/top-k/top-p/repetition
+src/chat.py            ChatML, model Jinja templates    src/sampler.py      temperature/top-k/top-p/repetition
+src/config.py          Qwen35Config, Cohere2Config
 src/models/            Qwen3.5 (hybrid), packed prefill src/engine.py       model registry, load_engine
 src/backend/           protocol, torch reference, Metal src/kernels/        *.metal kernels
 src/native/            Objective-C++ Metal runtime      src/server/         scheduler, API, metrics

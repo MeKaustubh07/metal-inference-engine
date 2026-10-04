@@ -40,6 +40,8 @@ cases += [
     "١٢٣٤٥ عربي", "१२३४५ हिन्दी", "１２３４５", "日本語 123456 テキスト", "🚀🔥 2026", "éclair (NFD)",
     "line1\r\nline2\n\n\tend", "Kiswahili ni lugha", "Ọmọ Yorùbá", "ሰላም ልዑል", "Xin chào thế giới",
     "<BOS_TOKEN><|START_OF_TURN_TOKEN|><|USER_TOKEN|>Hi<|END_OF_TURN_TOKEN|>",
+    # word boundaries after digits where the regex engines' \w differ (ZWNJ / ZWJ; superscripts, fractions)
+    "10000\u200c", "۱۲۰۰۰\u200cتومان", "دهه ۱۹۷۰\u200cها", "area 1000² m", "15000½ kg", "2024\u200d",
 ]
 random.seed(1)
 digits = "0123456789٠١٢٣٤٥٦٧٨٩०१२३४५६७८९０１２ ,.ab_\n"

@@ -10,6 +10,31 @@ from pathlib import Path
 
 import regex  # third-party engine: needed for \p{L} / \p{N} classes that the stdlib `re` lacks
 
+# HF tokenizers runs these regexes with Oniguruma, whose \w differs from the `regex` module's on 8 characters: ZWNJ
+# and ZWJ are word characters only in `regex`; ² ³ ¹ ¼ ½ ¾ only in Oniguruma. Tiny Aya's digit split ends in \b, so
+# a number written before a ZWNJ (common in Persian: ۱۹۷۰‌ها) would be grouped differently. \b is rewritten to
+# Oniguruma's word boundary; \w, \W and \B would need the same and are refused.
+_ONIG_W = r"(?:(?![\u200c\u200d])\w|[\u00b2\u00b3\u00b9\u00bc-\u00be])"
+_ONIG_B = rf"(?:(?<={_ONIG_W})(?!{_ONIG_W})|(?<!{_ONIG_W})(?={_ONIG_W}))"
+
+
+def oniguruma_compatible(pattern: str) -> str:
+    r"""The pattern with every \b outside a character class replaced by Oniguruma's word boundary."""
+    out, i, in_class = [], 0, False
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "\\" and i + 1 < len(pattern):
+            e = pattern[i + 1]
+            if e in "wWB" or (e == "b" and in_class):
+                raise NotImplementedError(f"\\{e} in a pre-tokenizer regex: {pattern!r}")
+            out.append(_ONIG_B if e == "b" else c + e)
+            i += 2
+            continue
+        in_class = (in_class and c != "]") or (not in_class and c == "[")
+        out.append(c)
+        i += 1
+    return "".join(out)
+
 
 def build_byte_alphabet() -> tuple[dict[int, str], dict[str, int]]:
     """The 256 atoms: every byte value 0..255 gets a printable stand-in character.
@@ -42,6 +67,8 @@ class Tokenizer:
             a, b = m.split(" ") if isinstance(m, str) else m
             self.merge_rank[(a, b)] = rank
 
+        if any(t.get(f) for t in spec["added_tokens"] for f in ("lstrip", "rstrip", "single_word", "normalized")):
+            raise NotImplementedError("added tokens with lstrip / rstrip / single_word / normalized set")
         self.special: dict[str, int] = {t["content"]: t["id"] for t in spec["added_tokens"]}
         # Some checkpoints declare extra added tokens only in tokenizer_config.json (Qwen3.5: 248070..248076)
         cfg_path = Path(path).with_name("tokenizer_config.json")
@@ -49,7 +76,8 @@ class Tokenizer:
             for tid, t in json.load(open(cfg_path, encoding="utf-8")).get("added_tokens_decoder", {}).items():
                 self.special.setdefault(t["content"], int(tid))
         self.id_to_token.update({i: t for t, i in self.special.items()})
-        self.special_re = regex.compile("(" + "|".join(regex.escape(s) for s in self.special) + ")")
+        self.special_re = regex.compile("(" + "|".join(regex.escape(s) for s in self.special) + ")") if self.special \
+            else None
 
         # Stage 1, normalization: Qwen3.5's file asks for NFC; Tiny Aya's has none (text is used as given).
         norm = spec["normalizer"]
@@ -61,7 +89,11 @@ class Tokenizer:
         # becomes its own piece and the text between matches stays as pieces too. Qwen3.5 has one Split whose regex
         # covers every character; Tiny Aya first splits off digit groups (3 at a time, from the right), then splits
         # every piece with a GPT-4o-style regex. ByteLevel with use_regex=false only maps bytes to stand-in chars.
-        # The regexes are taken VERBATIM from the file (the `regex` engine supports (?i:...)).
+        # The regexes are taken from the file verbatim (the `regex` engine supports (?i:...)), except that \b gets
+        # Oniguruma's meaning (see oniguruma_compatible). Known, rare differences from HF that remain: `regex` uses
+        # Unicode 17 tables and Oniguruma Unicode 16, so ~4,700 code points new in Unicode 17 are letters or digits
+        # only here; and Python's NFC (Qwen3.5) composes around a few dozen combining marks newer than tokenizers' NFC
+        # tables, which treat them as starters.
         # Note: for Qwen3.5 checkpoints, transformers' AutoTokenizer resolves to Qwen2Tokenizer (per the checkpoint's
         # tokenizer_config.json) and substitutes the older Qwen2 regex, which lacks \p{M}; it then splits combining
         # marks (Hindi, Tamil, Thai, Arabic) differently from this file. The file and transformers' own
@@ -74,16 +106,21 @@ class Tokenizer:
         for p in splits:
             if p["type"] != "Split" or p["behavior"] != "Isolated" or p["invert"]:
                 raise NotImplementedError(f"pre-tokenizer step {p}")
-        self.splits = [regex.compile(p["pattern"]["Regex"]) for p in splits]
+        self.splits = [regex.compile(oniguruma_compatible(p["pattern"]["Regex"])) for p in splits]
 
         if model["type"] != "BPE" or model.get("ignore_merges") or model.get("byte_fallback") or model.get("dropout"):
             raise NotImplementedError("only plain byte-level BPE is implemented")
 
-        # After BPE: Tiny Aya's post-processor puts <BOS_TOKEN> in front of every sequence; Qwen3.5's adds nothing.
-        pp = spec.get("post_processor") or {}
-        single = pp.get("single", []) if pp.get("type") == "TemplateProcessing" else [{"Sequence": {"id": "A"}}]
+        # After BPE: Tiny Aya's post-processor (TemplateProcessing) puts <BOS_TOKEN> in front of every sequence;
+        # Qwen3.5's (ByteLevel) only adjusts offsets. A Sequence may hold ByteLevel steps and one template.
+        pp = spec.get("post_processor")
+        procs = (pp["processors"] if pp["type"] == "Sequence" else [pp]) if pp else []
+        templates = [x for x in procs if x["type"] == "TemplateProcessing"]
+        if len(templates) > 1 or any(x["type"] not in ("ByteLevel", "TemplateProcessing") for x in procs):
+            raise NotImplementedError(f"post-processor {pp}")
+        single = templates[0]["single"] if templates else [{"Sequence": {"id": "A"}}]
         if [next(iter(x)) for x in single] == ["SpecialToken", "Sequence"]:
-            self.bos_id: int | None = pp["special_tokens"][single[0]["SpecialToken"]["id"]]["ids"][0]
+            self.bos_id: int | None = templates[0]["special_tokens"][single[0]["SpecialToken"]["id"]]["ids"][0]
         elif [next(iter(x)) for x in single] == ["Sequence"]:
             self.bos_id = None
         else:
@@ -141,7 +178,7 @@ class Tokenizer:
         Off by default: a chat template writes BOS itself, and a continuation (a decision option, a next turn)
         must never get one."""
         ids: list[int] = [self.bos_id] if add_bos and self.bos_id is not None else []
-        for part in self.special_re.split(text):                          # Stage 0: peel off specials
+        for part in self.special_re.split(text) if self.special_re else [text]:   # Stage 0: peel off specials
             if not part:
                 continue
             if part in self.special:

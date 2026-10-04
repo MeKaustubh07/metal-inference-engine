@@ -2,6 +2,7 @@
 chat template read from its files at load time (TemplateChat; Tiny Aya)."""
 import json
 from datetime import datetime
+from pathlib import Path
 
 from jinja2.ext import loopcontrols
 from jinja2.sandbox import ImmutableSandboxedEnvironment
@@ -22,9 +23,15 @@ class TemplateChat:
 
     def __init__(self, tokenizer_config: str, name: str = "default"):
         cfg = json.load(open(tokenizer_config, encoding="utf-8"))
-        template = cfg["chat_template"]
-        if isinstance(template, list):                 # several named templates: [{"name": ..., "template": ...}]
-            template = next(t["template"] for t in template if t["name"] == name)
+        jinja = Path(tokenizer_config).with_name("chat_template.jinja")     # transformers 5 prefers this file
+        if name == "default" and jinja.exists():
+            template = jinja.read_text(encoding="utf-8")
+        else:
+            template = cfg.get("chat_template")
+            if isinstance(template, list):             # several named templates: [{"name": ..., "template": ...}]
+                template = next((t["template"] for t in template if t["name"] == name), None)
+            if not isinstance(template, str):
+                raise ValueError(f"no chat template {name!r} in {tokenizer_config}")
         env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, extensions=[loopcontrols])
         env.filters["tojson"] = lambda x, ensure_ascii=False, indent=None, separators=None, sort_keys=False: json.dumps(
             x, ensure_ascii=ensure_ascii, indent=indent, separators=separators, sort_keys=sort_keys)

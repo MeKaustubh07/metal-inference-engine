@@ -1,4 +1,6 @@
-"""Quantize a safetensors checkpoint into a .qt file, one tensor at a time (never holds the whole model in RAM).
+"""Quantize a safetensors checkpoint into a .qt file, one tensor at a time. The input is read lazily (memory-mapped),
+but every quantized tensor stays in RAM until the file is written at the end (an incremental writer is planned for
+Tiny Aya, docs/tiny-aya-plan.md M4), and each tensor briefly needs several fp32 copies of itself.
 
 usage: quantize.py <model.safetensors | model.safetensors.index.json> <out.qt> --scheme int8|int4
                    [--policy configs/quant/<model>.json] [--prefix P]
@@ -17,6 +19,8 @@ class Filtered:
 
     def __init__(self, src, prefix: str):
         self.src, self.prefix = src, prefix
+        if not self.tensor_names():
+            raise SystemExit(f"no tensor name starts with {prefix!r} (names look like {src.tensor_names()[0]!r})")
 
     def tensor_names(self):
         return [n for n in self.src.tensor_names() if n.startswith(self.prefix)]

@@ -295,8 +295,13 @@ def create_app(engine, max_batch: int = 8, max_waiting: int = 64, kv_blocks: int
             raise HTTPException(400, "at least one user message is required")
         if sum(len(m.content) for m in body.messages) > MAX_PROMPT_CHARS:
             raise HTTPException(400, f"messages exceed {MAX_PROMPT_CHARS} characters in total")
-        prompt = format_chat([m.model_dump() for m in body.messages], style=engine.chat_style,
-                             enable_thinking=body.enable_thinking)
+        if body.enable_thinking and not getattr(engine, "thinking", False):
+            raise HTTPException(400, f"{engine.name} has no thinking mode")
+        try:                                              # a model's own template may refuse the conversation
+            prompt = format_chat([m.model_dump() for m in body.messages], style=engine.chat_style,
+                                 enable_thinking=body.enable_thinking)
+        except ValueError as e:                           # e.g. roles that do not alternate (Tiny Aya)
+            raise HTTPException(400, str(e))
         req, n = await submit(prompt, body, 256, add_bos=False)          # the chat template writes BOS itself
         out = respond(req, n, True, body, http, body.enable_thinking)
         return out if body.stream else await out

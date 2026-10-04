@@ -14,8 +14,12 @@ MODELS = [("Qwen3.5-0.8B", "models/qwen3.5-0.8b", "tests/golden_tokens_qwen35.js
 
 all_ok = True
 for name, model_dir, golden in MODELS:
-    if not (os.path.exists(f"{model_dir}/tokenizer.json") and os.path.exists(golden)):
-        print(f"SKIP {name}: needs {model_dir}/tokenizer.json and {golden}")
+    if not os.path.exists(f"{model_dir}/tokenizer.json"):
+        print(f"SKIP {name}: needs {model_dir}/tokenizer.json")
+        continue
+    if not os.path.exists(golden):                     # the model is here but its answer key was never made
+        print(f"FAIL {name}: run scripts/.venv/bin/python scripts/golden_tokens.py {model_dir} {golden}")
+        all_ok = False
         continue
     tok = Tokenizer(f"{model_dir}/tokenizer.json")
     cases = json.load(open(golden, encoding="utf-8"))
@@ -30,7 +34,8 @@ for name, model_dir, golden in MODELS:
             print("FAIL", name, repr(c["text"]), "\n  ours:", plain, "\n  gold:", c["ids_plain"],
                   "\n  with BOS ok:", full == c["ids"], " decoded ok:", decoded == c["decoded"], decoded == text)
     all_ok &= passed == len(cases)
-    print(f"{name}: {passed}/{len(cases)} cases match the official tokenizer (vocab {tok.vocab_size()}, BOS {tok.bos_id})")
+    print(f"{'PASS' if passed == len(cases) else 'FAIL'}  {name}: {passed}/{len(cases)} cases match the official "
+          f"tokenizer (vocab {tok.vocab_size()}, BOS {tok.bos_id})")
 
 # the 2B ships the same tokenizer files, so the 0.8B's answer keys cover it too
 same = all(open(f"models/qwen3.5-2b/{f}", "rb").read() == open(f"models/qwen3.5-0.8b/{f}", "rb").read()

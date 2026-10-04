@@ -193,6 +193,18 @@ state instead.
 | discarded | a first cost run with an unchunked baseline (44.7× / 191.9× at 1,279 tokens): ~45 s per forward that did not reproduce (3.02 s unchunked, 3.09 s chunked) |
 | tests | `test_decision` 24 checks |
 
+## Porting Tiny Aya, M1: everything before the model (2026-10-04/05; plan in `docs/tiny-aya-plan.md`)
+
+| step | commit | result |
+|---|---|---|
+| research | — | 4 reports, each checked by an adversarial verifier, then a check of the plan: the architecture recounts to exactly 3,349,227,520 parameters; the official config is hash-verified |
+| download | — | revision `af89d219`, pinned; both shards' SHA-256 equal their Hugging Face LFS hashes |
+| tokenizer | `86e502d` | every Isolated Split, NFC only when the file asks, BOS from the post-processor. The old code kept only the first regex's matches: for Tiny Aya, digit runs only (4/286 cases in the research probe). Now 185/185 vs HF for both models (Qwen's 66 earlier cases unchanged) |
+| config, sharded loader | `034ec7a` | `Cohere2Config` == transformers on 13 fields; the 290 tensors bit-identical to safetensors' own reader |
+| chat template | `02f13e3` | the model's own Jinja template, rendered as transformers renders it: == `apply_chat_template` on 10 conversations x 2, text and ids; a one-line question is 372 prompt tokens, ~360 of them the fixed preamble |
+| registry, BOS policy | `2f664f4` | stops 3 / 6 / 261001, the card's sampling, a 4096 cap (the sliding window); raw prompts get BOS, chat prompts and decision options do not |
+| review fixes | after `2f664f4` | `\b` with Oniguruma's word characters (a Persian number before ZWNJ, `۱۹۷۰‌ها`, was grouped differently); template errors 400 not 500; `enable_thinking` refused for Tiny Aya (it returned an empty reply); legacy rope `"type"` and invalid windows refused; vocab and stop-id guard at load; a licence guard that catches rewrapped copies. Tokenizers 191/191, `test_aya` 40/40 |
+
 ## Review workflows run
 
 | week | agents | findings → confirmed | notable |
@@ -214,3 +226,5 @@ state instead.
 | deployment fixes (lock, gauges, log reasons) | 31 | 14 → 2 confirmed (the same defect), fixed | the log fix wrote `cancelled` for stop-string completions |
 | removing Qwen2.5 (plan, port, review) | 19 | plan: 5 readers + 1 merge; review: 5 → 2 confirmed, fixed | a pointer to a moved test output; timings cited from an unarchived run (→ `run_tests.py --save`) |
 | decision endpoint | 41 | 19 → 9 confirmed + 1 split, fixed | prefix scoring, unchunked prefill, jobs blocking decode, abandoned jobs |
+| Tiny Aya research | 10 | 4 reports + 5 checks; 1 report off-task (its checker supplied the facts) | the official config recovered by hash; KV is 144 KiB/token (6x Qwen) in fp32; the old tokenizer would drop all non-digit text |
+| Tiny Aya M1 | 8 | 30 → 25 confirmed: 4 deferred to M2 / M4 / M6, 2 documented as rare known differences, the rest fixed | `\b` vs Oniguruma; template errors were 500; `enable_thinking` on Tiny Aya gave an empty reply; the legacy rope key was accepted |
