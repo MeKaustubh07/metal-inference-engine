@@ -1,0 +1,112 @@
+"""Tiny Aya Global (Cohere2) files: Cohere2Config against transformers' own config class, and the sharded weights
+against the safetensors library. Needs the gated files in models/tiny-aya-global (see docs/tiny-aya-plan.md)."""
+import json
+import os
+import sys
+import tempfile
+
+import torch
+from safetensors import safe_open
+from transformers import AutoConfig
+
+sys.path.insert(0, "src")
+from config import Cohere2Config
+from weight_loader import ShardedSafetensors, open_weights
+
+D = "models/tiny-aya-global"
+INDEX = f"{D}/model.safetensors.index.json"
+if not os.path.exists(INDEX):
+    print(f"SKIP: needs {INDEX} (gated download)")
+    sys.exit(0)
+
+results = []
+def check(name, ok):
+    results.append(bool(ok)); print(f"{'PASS' if ok else 'FAIL'}  {name}")
+
+# 1. the config, field by field against transformers' Cohere2Config (the reference the port is checked against)
+cfg, hf = Cohere2Config.from_json(f"{D}/config.json"), AutoConfig.from_pretrained(D)
+hf_theta = (getattr(hf, "rope_parameters", None) or {}).get("rope_theta", getattr(hf, "rope_theta", None))
+pairs = {"layers": (cfg.num_hidden_layers, hf.num_hidden_layers), "hidden": (cfg.hidden_size, hf.hidden_size),
+         "ffn": (cfg.intermediate_size, hf.intermediate_size), "vocab": (cfg.vocab_size, hf.vocab_size),
+         "heads": (cfg.num_attention_heads, hf.num_attention_heads),
+         "kv heads": (cfg.num_key_value_heads, hf.num_key_value_heads),
+         "head_dim": (cfg.head_dim, hf.head_dim), "eps": (cfg.layer_norm_eps, hf.layer_norm_eps),
+         "window": (cfg.sliding_window, hf.sliding_window), "layer_types": (cfg.layer_types, list(hf.layer_types)),
+         "logit_scale": (cfg.logit_scale, hf.logit_scale), "tied": (cfg.tie_word_embeddings, hf.tie_word_embeddings),
+         "rope_theta": (cfg.rope_theta, float(hf_theta))}
+check(f"Cohere2Config == transformers on all {len(pairs)} fields", all(a == b for a, b in pairs.values()))
+for k, (a, b) in pairs.items():
+    if a != b:
+        print(f"      {k}: ours {a}, transformers {b}")
+full = [i for i in range(cfg.num_hidden_layers) if not cfg.is_sliding(i)]
+check("36 layers, 16/4 heads x 128, window 4096, full attention at 3, 7, ..., 35, logit_scale 1.0, tied",
+      (cfg.num_hidden_layers, cfg.num_attention_heads, cfg.num_key_value_heads, cfg.head_dim, cfg.sliding_window)
+      == (36, 16, 4, 128, 4096) and full == list(range(3, 36, 4)) and cfg.logit_scale == 1.0 and cfg.tie_word_embeddings)
+
+# 2. the traps: settings whose defaults differ, and settings this engine does not implement
+raw = json.load(open(f"{D}/config.json"))
+with tempfile.TemporaryDirectory() as tmp:
+    def variant(**edits):
+        c = {k: v for k, v in raw.items() if k not in edits or edits[k] is not None}
+        c.update({k: v for k, v in edits.items() if v is not None})
+        json.dump(c, open(f"{tmp}/config.json", "w"))
+        return f"{tmp}/config.json"
+    no_scale = Cohere2Config.from_json(variant(logit_scale=None)).logit_scale
+    check(f"no logit_scale in the file -> {no_scale}, as transformers ({AutoConfig.from_pretrained(tmp).logit_scale})",
+          no_scale == AutoConfig.from_pretrained(tmp).logit_scale == 0.0625)
+    nested = variant(rope_theta=None, rope_parameters={"rope_type": "default", "rope_theta": 50000})
+    check("rope_theta nested under rope_parameters (transformers 5 files) is read too",
+          Cohere2Config.from_json(nested).rope_theta == 50000.0)
+    for edit in ({"use_qk_norm": True}, {"position_embedding_type": "rope"}, {"use_parallel_block": False},
+                 {"rope_scaling": {"type": "linear", "factor": 2.0}}, {"head_dim": 256}, {"model_type": "cohere"}):
+        try:
+            Cohere2Config.from_json(variant(**edit)); check(f"refuses {edit}", False)
+        except ValueError:
+            check(f"refuses {edit}", True)
+
+# 3. the sharded weights, through the index, against the safetensors library
+w = open_weights(INDEX)
+names = set(w.tensor_names())
+per_layer = ["input_layernorm.weight"] + [f"self_attn.{p}_proj.weight" for p in "qkvo"] + \
+            [f"mlp.{p}_proj.weight" for p in ("gate", "up", "down")]
+expected = {"model.embed_tokens.weight", "model.norm.weight"} | \
+           {f"model.layers.{i}.{n}" for i in range(cfg.num_hidden_layers) for n in per_layer}
+check(f"index -> ShardedSafetensors with exactly the {len(expected)} expected tensors (no lm_head: tied)",
+      isinstance(w, ShardedSafetensors) and names == expected)
+check("integrity: each file accounts for its bytes, and the tensor bytes add up to the index's total_size",
+      w.integrity_check())
+infos = {n: w.info(n) for n in names}
+params = sum(torch.Size(i["shape"]).numel() for i in infos.values())
+check(f"{params:,} parameters, all BF16 (the published count is 3,349,227,520)",
+      params == 3_349_227_520 and {i["dtype"] for i in infos.values()} == {"BF16"})
+weight_map = json.load(open(INDEX))["weight_map"]
+by_shard = {}
+for n, f in sorted(weight_map.items()):
+    by_shard.setdefault(f, n)                                      # the first tensor of each file
+same = True
+for n in sorted({"model.embed_tokens.weight", "model.layers.0.self_attn.q_proj.weight"} | set(by_shard.values())):
+    with safe_open(f"{D}/{weight_map[n]}", framework="pt") as f:
+        same &= torch.equal(w.get(n), f.get_tensor(n))
+check(f"get() == safetensors' own reader, bit for bit, on tensors from all {len(by_shard)} files", same)
+try:
+    w.get("lm_head.weight"); check("an unknown name raises KeyError", False)
+except KeyError:
+    check("an unknown name raises KeyError", True)
+
+# 4. a corrupt index (a tensor listed under the wrong file) is refused
+with tempfile.TemporaryDirectory() as tmp:
+    idx = json.load(open(INDEX))
+    files = sorted(set(idx["weight_map"].values()))
+    for f in files:
+        os.symlink(os.path.abspath(f"{D}/{f}"), f"{tmp}/{f}")
+    n = next(n for n, f in idx["weight_map"].items() if f == files[0])
+    idx["weight_map"][n] = files[1]
+    json.dump(idx, open(f"{tmp}/model.safetensors.index.json", "w"))
+    try:
+        ShardedSafetensors(f"{tmp}/model.safetensors.index.json")
+        check("an index that disagrees with its files is refused", False)
+    except ValueError:
+        check("an index that disagrees with its files is refused", True)
+
+print(f"\n{sum(results)}/{len(results)} passed")
+sys.exit(0 if all(results) else 1)

@@ -10,8 +10,8 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-TESTS = ["test_tokenizer", "test_sampling", "test_cache", "test_paged", "test_kernels", "test_native", "test_quant",
-         "test_qwen35", "test_qwen35_2b", "test_server", "test_prefill", "test_decision"]
+TESTS = ["test_tokenizer", "test_aya", "test_sampling", "test_cache", "test_paged", "test_kernels", "test_native",
+         "test_quant", "test_qwen35", "test_qwen35_2b", "test_server", "test_prefill", "test_decision"]
 SLOW = {"test_cache", "test_quant", "test_qwen35", "test_qwen35_2b", "test_server", "test_prefill", "test_decision"}
 
 

@@ -10,7 +10,7 @@ from config import Qwen35Config
 from models.qwen3_5 import Qwen35Model
 from quant import QtFile
 from tokenizer import Tokenizer
-from weight_loader import SafetensorsFile
+from weight_loader import open_weights
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -51,7 +51,7 @@ def load_engine(name: str, backend: str = "metal", weights_file: str | None = No
     spec = MODELS[name]
     d = ROOT / spec["dir"]
     be = make_backend(backend, str(ROOT / spec["policy"]))
-    weights = QtFile(weights_file) if weights_file else SafetensorsFile(str(d / spec["weights"]))
+    weights = QtFile(weights_file) if weights_file else open_weights(str(d / spec["weights"]))
     if spec["family"] != "qwen3_5":
         raise ValueError(f"unknown model family {spec['family']!r}")
     model = Qwen35Model(Qwen35Config.from_json(str(d / "config.json")), weights, be)
