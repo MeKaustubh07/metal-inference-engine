@@ -130,7 +130,10 @@ some order), so options are scored independently.
 
 The hybrid architecture is what makes this fit. If all 24 layers were full attention, a token would cost 96 KiB
 and a 4k-token context 384 MiB **per sequence**. With 18 of 24 layers as DeltaNet the same context costs 96 MiB + 20
-MiB of fixed state. The KV cache is kept in fp32 to match the reference exactly; bf16 KV would halve it.
+MiB of fixed state. Qwen3.5's KV cache is kept in fp32 to match the reference exactly. Tiny Aya's (36 attention
+layers, 144 KiB per token in fp32) is stored in bf16 (`kv_dtype` in the registry): the decode-attention kernels read
+bf16 or fp32 K/V and widen each element as they read it, and the cost is measured as a KL change (none measurable
+at the answer key's positions; tests/test_aya_quant.py).
 
 ## 5. Performance model
 
@@ -292,7 +295,7 @@ The engine is **stateful**: a sequence's KV blocks and DeltaNet state live in on
 - Single-stream decode trails MLX-LM (50 vs 70 tok/s): mostly bytes (our tied head is INT8, 0.5 GB of the 1.41 GB,
   by a rule carried over from Qwen2.5 and not re-measured on Qwen3.5; MLX's is 4-bit), plus ~300 dispatches per
   step issued from Python.
-- The KV cache is fp32; a bf16 or INT8 KV cache would double or quadruple context capacity.
+- Qwen3.5's KV cache is fp32 (Tiny Aya's is bf16); an INT8 KV cache would double the bf16 capacity again.
 - No prefix caching yet (item 2 above).
 - Speculative decoding (Qwen3.5-0.8B drafting for 2B) would cut per-token latency at batch 1.
 - Text only: the checkpoint's vision tower is ignored.

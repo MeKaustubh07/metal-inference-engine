@@ -195,6 +195,21 @@ for be in ("cpu", "mps", "metal"):                     # fp32 on the CPU (13.4 G
         refused.append(be)
 check(f"load_engine refuses Tiny Aya on the unquantized backends ({', '.join(refused)}), before loading anything",
       refused == ["cpu", "mps", "metal"])
+if torch.backends.mps.is_available():                  # what load_engine hands the model class, without loading it
+    import engine as engine_module
+    passed = {}
+    class Recorder:
+        def __init__(self, config, weights, backend, **kw):
+            passed.update(kw)
+    real = engine_module.FAMILIES["cohere2"]
+    engine_module.FAMILIES["cohere2"] = (real[0], Recorder)
+    try:
+        load_engine("tiny-aya-global", "metal-int8")
+    finally:
+        engine_module.FAMILIES["cohere2"] = real
+    others = [n for n, s in MODELS.items() if n != "tiny-aya-global" and "kv_dtype" in s]
+    check(f"registry: Tiny Aya's KV cache is bf16 (load_engine passes {passed}); the other models keep fp32 "
+          f"(no kv_dtype: {others == []})", passed == {"kv_dtype": torch.bfloat16} and others == [])
 plain = prompt_ids(tok, "", "Is the sky blue?", False, aya)
 chatted = prompt_ids(tok, "", "Is the sky blue?", True, aya)
 opts = [option_ids(tok, o, c) for o in ("Yes", " No") for c in (True, False)]

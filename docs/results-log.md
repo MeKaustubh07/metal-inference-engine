@@ -240,6 +240,16 @@ The full model in fp32 is 13.4 GB; one layer is 0.31 GB. Both sides run one laye
 | decode speed, single stream, fp32 KV | INT8 19-21 tok/s, INT4 29-32 tok/s over three runs (estimate ~30) |
 | review (4 areas, each finding checked by a skeptic) | the LayerNorm kernel clean; fixed: calibrate_quant's scheme restore broke the bf16 (Qwen3.5) path (smoke-tested again), its missing-goldens hint, `save_qt` now writes to a temporary file replaced only when complete and `QtFile` refuses a truncated file at open (checked with an interrupted synthetic write), the served-position mask (BOS and each chat's last position were wrongly left out, post-stop decode steps wrongly kept), the INT4 hint without `--policy`, the quantize.py docstring |
 
+## Porting Tiny Aya, M5 part A: bf16 KV cache (2026-10-05)
+
+| step | result |
+|---|---|
+| kernels | both decode-attention kernels are templates over the KV type (float, bfloat), instantiated under the old names and `_bf16`; on a bf16 cache they are bit-identical to the fp32 kernels on the widened copy (Tiny Aya 16/4 x 128 to 8192 positions, Qwen 8/2 x 256 and 14/2 x 64, paged with scrambled tables). `compile_shader` does not check argument types (a bf16 tensor in a `float*` kernel is read as garbage without an error), so the backend picks the kernel by dtype and refuses any other |
+| speed | at 4096 positions the bf16 kernel takes 807 us vs 849 us for fp32: the kernel is limited by its parallelism (one threadgroup per query head), not by reading K/V, so bf16 saves memory, not decode time; splitting each head's keys over several threadgroups is a later performance step |
+| per model | `kv_dtype` on the registry entry: Tiny Aya bf16 (72 KiB per token instead of 144), Qwen3.5 fp32 |
+| tiny random model, CPU | bf16 KV: half the bytes, logits within 5.9e-3 of fp32 KV, same argmax as HF at 23/23 positions (KL 6.6e-6); paged == contiguous exactly, batched == alone, forks exact. Chunked vs one pass is not exact in bf16: 18 of 11,776 cached values land one bf16 step apart, because fp32 rounding differences (other GEMM shapes) push values across a bf16 rounding boundary (1.1e-4 on the logits) |
+| real model vs the M3 key (169 positions, up to ~386 tokens) | INT8: KL 0.0006 with fp32 KV, 0.0006 with bf16 (+0.0000), 0 flips, greedy 90/90 in both. INT4: 0.1050 vs 0.1036 (-0.0014; +0.0001 at served positions), 9 flips and 44/90 in both. Decode speed unchanged (INT8 ~21, INT4 ~30 tok/s). Long contexts (4K-8K) are measured in part B |
+
 ## Review workflows run
 
 | week | agents | findings → confirmed | notable |

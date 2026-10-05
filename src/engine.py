@@ -29,11 +29,12 @@ MODELS = {
     # Stops: <EOS_TOKEN>, <|END_OF_TURN_TOKEN|>, <|END_RESPONSE|>. Sampling: the model card's. max_model_len: the
     # sliding window, below which sliding layers equal full causal attention (window support comes later). No
     # thinking mode. policy: written by scripts/calibrate_quant.py; until then INT4 warns. backends: only the
-    # quantized Metal ones fit in 8 GB (fp32 on the CPU would need 13.4 GB, bf16 on the GPU 6.7 GB).
+    # quantized Metal ones fit in 8 GB (fp32 on the CPU would need 13.4 GB, bf16 on the GPU 6.7 GB). kv_dtype: its KV
+    # is 6x Qwen3.5-2B's per token (36 layers x 4 heads x 128), so it is stored in bf16 (the other models keep fp32).
     "tiny-aya-global": dict(dir="models/tiny-aya-global", family="cohere2", weights="model.safetensors.index.json",
                             eos=[3, 6, 261001], chat="template", policy="configs/quant/tiny-aya-global.json",
                             sampling=dict(temperature=0.1, top_p=0.95, top_k=50, repetition_penalty=1.0),
-                            max_model_len=4096, backends=("metal-int8", "metal-int4")),
+                            max_model_len=4096, backends=("metal-int8", "metal-int4"), kv_dtype="bfloat16"),
 }
 FAMILIES = {"qwen3_5": (Qwen35Config, Qwen35Model),          # family -> (config class, model class)
             "cohere2": (Cohere2Config, Cohere2Model)}
@@ -87,7 +88,7 @@ def load_engine(name: str, backend: str = "metal", weights_file: str | None = No
                          f"stop ids {spec['eos']}")
     be = make_backend(backend, str(ROOT / p) if (p := spec.get("policy")) else None)
     weights = QtFile(weights_file) if weights_file else open_weights(str(d / spec["weights"]))
-    model = model_cls(cfg, weights, be)
+    model = model_cls(cfg, weights, be, **({"kv_dtype": getattr(torch, spec["kv_dtype"])} if "kv_dtype" in spec else {}))
     caps = [c for c in (spec.get("max_model_len"), getattr(model, "max_positions", None)) if c]
     return Engine(name, model, tok, set(spec["eos"]), chat_style(spec, d), spec["sampling"],
                   min(caps) if caps else None, spec.get("thinking", False))

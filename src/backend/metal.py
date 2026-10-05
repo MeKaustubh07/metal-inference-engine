@@ -15,6 +15,7 @@ TG = 256                                                   # threads per threadg
 MAX_BATCH = 8                                              # rows one batched matvec dispatch handles (MAX_BATCH in MSL)
 KERNEL_ROWS = 4 * MAX_BATCH                                # up to here: batched kernels in groups; beyond: GEMM
 DEQUANT_CHUNK = 1 << 23                                    # weights expanded per prefill GEMM piece (32 MB fp32)
+KV_DTYPES = (torch.float32, torch.bfloat16)                # the KV cache types the decode-attention kernels read
 
 
 def load_library():
@@ -180,15 +181,25 @@ class MetalBackend(TorchBackend):
                       threads=n, group_size=min(TG, n))
         return out
 
+    def _kv_kernel(self, name: str, k, v):
+        """The decode-attention kernel built for the cache's dtype (attention.metal). compile_shader does not check
+        argument types: a bf16 tensor bound to a float* parameter is read as garbage without an error, so the dtype
+        picks the kernel here and anything else is refused."""
+        if k.dtype != v.dtype or k.dtype not in KV_DTYPES:
+            raise TypeError(f"{name}: keys and values must both be float32 or bfloat16, not {k.dtype} / {v.dtype}")
+        return getattr(self.lib, name if k.dtype == torch.float32 else name + "_bf16")
+
     def attention(self, q, k, v, causal=True):
         if q.shape[0] != 1:
             return super().attention(q, k, v, causal)       # prefill: many queries, masked
         _, Hq, d = q.shape
         S, Hkv, _ = k.shape
+        if k.dtype != v.dtype or k.dtype not in KV_DTYPES:  # e.g. fp16: widened, as before
+            k, v = k.float(), v.float()
         out = torch.empty(1, Hq, d, device=self.device)
         scores = torch.empty(Hq, S, device=self.device)
-        self.lib.attention_decode(out, q.float().contiguous(), k.float().contiguous(), v.float().contiguous(),
-                                  scores, S, Hkv, Hq // Hkv, d, threads=Hq * TG, group_size=TG)
+        self._kv_kernel("attention_decode", k, v)(out, q.float().contiguous(), k.contiguous(), v.contiguous(),
+                                                  scores, S, Hkv, Hq // Hkv, d, threads=Hq * TG, group_size=TG)
         return out
 
     def paged_attention(self, q, k_pool, v_pool, tables, lens, block_size):
@@ -199,9 +210,9 @@ class MetalBackend(TorchBackend):
         max_len = tables.shape[1] * block_size
         out = torch.empty(B, Hq, d, device=self.device)
         scores = torch.empty(B, Hq, max_len, device=self.device)
-        self.lib.paged_attention_decode(out, q.float().contiguous(), k_pool, v_pool, scores, tables, lens,
-                                        tables.shape[1], max_len, block_size, Hkv, Hq // Hkv, d,
-                                        threads=(Hq * TG, B), group_size=(TG, 1))
+        self._kv_kernel("paged_attention_decode", k_pool, v_pool)(
+            out, q.float().contiguous(), k_pool, v_pool, scores, tables, lens, tables.shape[1], max_len, block_size,
+            Hkv, Hq // Hkv, d, threads=(Hq * TG, B), group_size=(TG, 1))
         return out
 
     def silu_mul(self, gate, up):

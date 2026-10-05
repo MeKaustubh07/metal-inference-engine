@@ -19,6 +19,10 @@ whose positions stay below it is exact; anything longer is refused rather than s
 stream=True (the fp32 CPU reference of the real model, which would need 13.4 GB if every widened weight were kept):
 each weight is widened when used and dropped after, the embedding rows are read from the stored table, and the tied
 head is widened HEAD_ROWS rows at a time. Slower, the same numbers; peak memory ~1 layer instead of the model.
+
+kv_dtype: what the KV cache stores. fp32 (the default) keeps K/V exactly as computed, as HF does with fp32
+activations; bf16 (Tiny Aya served on Metal: 72 KiB per token instead of 144) rounds them as they are stored, and every
+read widens them back to fp32, so all arithmetic stays fp32. The rounding is a measured deviation (tests/test_aya_quant.py).
 """
 import torch
 
@@ -39,8 +43,12 @@ def interleaved_to_half(n_heads: int, d: int) -> torch.Tensor:
 
 
 class Cohere2Model:
-    def __init__(self, config: Cohere2Config, weights, backend=None, stream: bool = False):
+    def __init__(self, config: Cohere2Config, weights, backend=None, stream: bool = False,
+                 kv_dtype: torch.dtype = torch.float32):
+        if kv_dtype not in (torch.float32, torch.bfloat16):
+            raise ValueError(f"kv_dtype must be torch.float32 or torch.bfloat16, not {kv_dtype}")
         self.config = config
+        self.kv_dtype = kv_dtype
         self.weights = weights
         self.b = backend or TorchBackend()
         self._cache: dict[str, torch.Tensor] = {}
@@ -80,13 +88,13 @@ class Cohere2Model:
         c = self.config
         if kv is None:
             kv = ContiguousKVCache(c.num_hidden_layers, c.num_key_value_heads, c.head_dim, max_len,
-                                   device=self.b.device, dtype=torch.float32)
+                                   device=self.b.device, dtype=self.kv_dtype)
         return HybridState(kv, device=self.b.device)
 
     def new_paged_pool(self, num_blocks: int, block_size: int = 16, max_seqs: int = 8) -> HybridPool:
         c = self.config
         kv = PagedKVPool(c.num_hidden_layers, c.num_key_value_heads, c.head_dim, num_blocks, block_size,
-                         device=self.b.device, dtype=torch.float32)
+                         device=self.b.device, dtype=self.kv_dtype)
         return HybridPool(kv, max_seqs, 0, 0, 0, 0, 0, 1, device=self.b.device)
 
     def new_paged_state(self, pool: HybridPool) -> HybridState:

@@ -131,6 +131,36 @@ for Hq, Hkv, d in ((8, 2, 256), (14, 2, 64), (16, 4, 128)):                     
     check(f"paged_attention_decode B=5 lengths {lens_l}, block size {bs}, scrambled tables, {Hq}/{Hkv} heads d={d}: "
           f"max|diff|={diff:.1e}", diff < 1e-4)
 
+# bf16 KV cache (half the bytes): the _bf16 kernels widen each element to fp32 as they read it, so they must give
+# EXACTLY what the fp32 kernels give on the widened copy, and stay within fp32 rounding of the reference
+for S, scale, Hq, Hkv, d in ((1, 1, 16, 4, 128), (300, 1, 16, 4, 128), (4096, 1, 16, 4, 128), (8192, 1, 16, 4, 128),
+                             (300, 30, 8, 2, 256),
+                             (300, 1, 14, 2, 64)):
+    q = torch.randn(1, Hq, d, device=dev) * scale
+    k, v = (torch.randn(S, Hkv, d, device=dev).bfloat16() for _ in range(2))
+    ours = mb.attention(q, k, v)
+    same = torch.equal(ours, mb.attention(q, k.float(), v.float()))
+    diff = maxdiff(ours, ops.attention(q, k.float(), v.float(), causal=True))
+    kf, vf = k.float(), v.float()                                   # widened outside the timed call
+    t16, t32 = bench(lambda: mb.attention(q, k, v), 100), bench(lambda: mb.attention(q, kf, vf), 100)
+    check(f"attention_decode_bf16 S={S} q-scale {scale} {Hq}/{Hkv} heads d={d}: == fp32 kernel on the widened cache: "
+          f"{same}, max|diff| vs reference {diff:.1e} | bf16 {t16:.0f} us vs fp32 {t32:.0f} us", same and diff < 1e-4)
+for Hq, Hkv, d in ((8, 2, 256), (16, 4, 128)):
+    kp, vp = (torch.randn(32, bs, Hkv, d, device=dev).bfloat16() for _ in range(2))
+    q = torch.randn(len(lens_l), Hq, d, device=dev)
+    ours = mb.paged_attention(q, kp, vp, tables, lens, bs)
+    same = torch.equal(ours, mb.paged_attention(q, kp.float(), vp.float(), tables, lens, bs))
+    diff = maxdiff(ours, rb.paged_attention(q, kp, vp, tables, lens, bs))
+    check(f"paged_attention_decode_bf16 B=5, {Hq}/{Hkv} heads d={d}: == fp32 kernel on the widened pool: {same}, "
+          f"max|diff| vs reference {diff:.1e}", same and diff < 1e-4)
+# a bf16 tensor bound to a float* kernel reads as garbage without an error: any other dtype must be refused
+for kd, vd in ((torch.float16, torch.float16), (torch.bfloat16, torch.float32)):
+    try:
+        mb.paged_attention(q, kp.to(kd), vp.to(vd), tables, lens, bs); refused = False
+    except TypeError:
+        refused = True
+    check(f"paged_attention refuses a {str(kd)[6:]} / {str(vd)[6:]} pool (TypeError)", refused)
+
 # weights locked in RAM (backend/pinning.py): mlock of the MTLBuffer pages behind MPS tensors. The kernel's user wire
 # count on the buffers' memory must go to 1 and back to 0 after unlock, and the GPU must still read the same data.
 # (The system-wide wired-page count is no test: the GPU driver itself wires buffers it has just used, and lets go of

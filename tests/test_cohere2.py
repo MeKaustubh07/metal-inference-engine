@@ -208,6 +208,61 @@ with tempfile.TemporaryDirectory() as tmp:
           rel(w, model.forward(torch.tensor(prompt.tolist() + [7, 5]))[-1]) < 1e-5
           and rel(y[0], model.forward(torch.tensor(prompt.tolist() + [9]))[-1]) < 1e-5)
 
+    # 6b. bf16 KV cache (Tiny Aya served on Metal): K/V rounded to bf16 as stored, widened back to fp32 when read.
+    # Half the bytes, a small deviation from HF's fp32 K/V (measured on the real model in test_aya_quant), and every
+    # equality between the engine's own paths still exact
+    m16 = Cohere2Model(model.config, model.weights, kv_dtype=torch.bfloat16)
+    s16, s32 = m16.new_state(64), model.new_state(64)
+    p16, p32 = m16.forward(prompt, state=s16), model.forward(prompt, state=s32)
+    check(f"bf16 KV: stored as bfloat16, {s16.bytes_used()} bytes vs {s32.bytes_used()} for fp32; prefill logits "
+          f"within {rel(p16, p32):.1e} (relative) of fp32 KV",
+          s16.kv.k.dtype == torch.bfloat16 and 2 * s16.bytes_used() == s32.bytes_used() and rel(p16, p32) < 2e-2)
+
+    def run16(st):
+        out = [m16.forward(prompt[:9], state=st), m16.forward(prompt[9:], state=st)]
+        out += [m16.forward(torch.tensor([t]), state=st) for t in got[:6]]
+        return torch.cat(out)
+    pool16 = m16.new_paged_pool(num_blocks=64, block_size=4, max_seqs=8)
+    c16, g16, c32 = run16(m16.new_state(64)), run16(m16.new_paged_state(pool16)), run(model.new_state(64))
+    check(f"bf16 KV: paged pool (bfloat16) == contiguous, max difference {(c16 - g16).abs().max().item():.1e}; the "
+          f"whole run within {rel(c16, c32):.1e} of fp32 KV",
+          pool16.kv.k.dtype == torch.bfloat16 and torch.allclose(c16, g16, rtol=0, atol=1e-6) and rel(c16, c32) < 2e-2)
+
+    def prefilled(new, ids):
+        st = new(); m16.forward(ids, state=st); return st
+    pair = (prompt[:5], prompt[:17])
+    batched = m16.decode_batch([7, 9], [prefilled(lambda: m16.new_paged_state(pool16), p) for p in pair])
+    alone = torch.cat([m16.forward(torch.tensor([t]), state=prefilled(lambda: m16.new_state(64), p))
+                       for t, p in zip((7, 9), pair)])
+    check(f"bf16 KV: batched paged decode == one at a time, relative error {rel(batched, alone):.1e}",
+          rel(batched, alone) < 1e-5)
+    # chunked vs one pass is NOT exact in bf16: the K/V of later layers differ by fp32 rounding (other GEMM shapes),
+    # and a value near a bf16 rounding boundary then rounds one step (2^-8) the other way. The difference must stay
+    # far below bf16's own deviation from fp32 KV
+    st1, st2 = m16.new_state(64), m16.new_state(64)
+    one = m16.forward(prompt, state=st1)
+    two = torch.cat([m16.forward(prompt[:9], state=st2), m16.forward(prompt[9:], state=st2)])
+    flips = int((st1.kv.k[:, :23] != st2.kv.k[:, :23]).sum() + (st1.kv.v[:, :23] != st2.kv.v[:, :23]).sum())
+    check(f"bf16 KV: prompt in two chunks (9 + 14) vs one pass: {flips} of {2 * st1.kv.k[:, :23].numel()} cached "
+          f"values one bf16 step apart, logits within {rel(two, one):.1e} (bf16 vs fp32 KV: {rel(p16, p32):.1e})",
+          rel(two, one) < rel(p16, p32) / 10)
+    base16 = m16.new_state(64)
+    m16.forward(prompt, state=base16)
+    f16 = base16.fork()
+    x16, y16 = m16.forward(torch.tensor([7]), state=base16), m16.forward(torch.tensor([7]), state=f16)
+    check("bf16 KV: a fork is bfloat16 too and continues exactly like the original",
+          f16.kv.k.dtype == torch.bfloat16 and torch.equal(x16, y16))
+    lp, lq = torch.log_softmax(ref_logits, -1), torch.log_softmax(p16, -1)
+    kl16 = (lp.exp() * (lp - lq)).sum(-1)
+    same = int((p16.argmax(-1) == ref_logits.argmax(-1)).sum())
+    check(f"bf16 KV vs HF (fp32 K/V): same argmax at {same}/{len(prompt)} positions, KL mean {kl16.mean():.1e} "
+          f"max {kl16.max():.1e}", same == len(prompt))
+    try:
+        Cohere2Model(model.config, model.weights, kv_dtype=torch.float16); refused = False
+    except ValueError:
+        refused = True
+    check("kv_dtype other than float32 / bfloat16 refused (the attention kernels read only those)", refused)
+
 with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as shards:
     import golden_aya                                           # 7. the answer key on a checkpoint shaped like the
     hf16, _ = build(tmp, window=16, seed=4)                     # real one: bf16 in several files (an index), the head
