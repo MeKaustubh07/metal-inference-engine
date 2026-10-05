@@ -227,6 +227,19 @@ The full model in fp32 is 13.4 GB; one layer is 0.31 GB. Both sides run one laye
 | M3 review (2 lenses + 2 verifiers) | no bug; the fast suite now exercises streaming on bf16 weights (with a record of what is widened), packed captures and the answer key on bf16 shards with the head in slices and prompts crossing the window; the real-model test compares an explicit list of 38 tensors, the embedding bit for bit, per-token errors (the BOS token's activations are up to 50x the others', so whole-tensor errors could have hidden theirs; they did not: per token is ~1.5x) and every decode step's logits; README credits Tiny Aya (licence, AUP, not affiliated, citation) |
 | what Tiny Aya says | "The capital of France is" → " Paris."; Arabic → Cairo; Chinese → Beijing; Swahili → Nairobi; a one-word chat answer → "Paris." then `<|END_RESPONSE|>` (the first stop token a chat turn emits) |
 
+## Porting Tiny Aya, M4: INT8 / INT4 on Metal (2026-10-05)
+
+| step | result |
+|---|---|
+| memory | `quantize()` in whole-row chunks of 2^24 weights (bit-identical; the 262,144-row embedding needed ~6.5 GB of fp32 temporaries in one piece); `save_qt` writes the header first, then one tensor at a time (byte-identical to the old writer on synthetic files and on Qwen3.5-0.8B INT4 with its policy, 4x faster) |
+| files | INT8 3.56 GB in 27 s, INT4 2.34 GB in 25 s, ~3 GB peak RSS (mostly the checkpoint's mapped pages) |
+| kernels | Metal LayerNorm (two threadgroup reductions) within 6.2e-6 of `ops.layer_norm` (inputs offset by 100); decode attention 16/4 heads x 128 to 4096 positions 1.7e-7; paged 3.6e-7 |
+| quality vs the M3 fp32 key, 169 positions (all raw positions, last 8 of each chat, every decode step) | INT8: KL 0.0006, top-1 flips 0/116, greedy 90/90 tokens. INT4 (calibrated): KL 0.105, 0.054 at the 150 served positions (in-template positions and decode steps from the reference's own stop token on left out), 9/116 flips, greedy 44/90 |
+| where INT4 differs most | 5 of the 6 positions with KL > 0.5 are after the model's own `<EOS_TOKEN>` or inside the chat template, where the reference is unsure (top probability ~0.5) and no server would use the prediction; the sixth is a real miss mid-sentence in Swahili. Without those 6, mean KL 0.050 (Qwen3.5-2B INT4: 0.045 vs HF bf16, a per-prompt mean over prompt positions only, so a near but not identical statistic) |
+| calibration (`--baseline int8`: every tensor INT8 from the checkpoint, one at a time rebuilt in INT4) | 33 min for 144 tensors; 1 above 0.005 nats (layer 0's `down_proj`, +0.012), median 0.0003; damages sum to 0.073 nats, the top 10 hold 36%, the MLP 80%. Unlike Qwen3.5 (a few o_proj / down_proj at position 0), Tiny Aya's INT4 error is spread thinly: the policy moves KL only 0.109 -> 0.105 |
+| decode speed, single stream, fp32 KV | INT8 19-21 tok/s, INT4 29-32 tok/s over three runs (estimate ~30) |
+| review (4 areas, each finding checked by a skeptic) | the LayerNorm kernel clean; fixed: calibrate_quant's scheme restore broke the bf16 (Qwen3.5) path (smoke-tested again), its missing-goldens hint, `save_qt` now writes to a temporary file replaced only when complete and `QtFile` refuses a truncated file at open (checked with an interrupted synthetic write), the served-position mask (BOS and each chat's last position were wrongly left out, post-stop decode steps wrongly kept), the INT4 hint without `--policy`, the quantize.py docstring |
+
 ## Review workflows run
 
 | week | agents | findings → confirmed | notable |
@@ -251,3 +264,4 @@ The full model in fp32 is 13.4 GB; one layer is 0.31 GB. Both sides run one laye
 | Tiny Aya research | 10 | 4 reports + 5 checks; 1 report off-task (its checker supplied the facts) | the official config recovered by hash; KV is 144 KiB/token (6x Qwen) in fp32; the old tokenizer would drop all non-digit text |
 | Tiny Aya M1 | 8 | 30 → 25 confirmed: 4 deferred to M2 / M4 / M6, 2 documented as rare known differences, the rest fixed | `\b` vs Oniguruma; template errors were 500; `enable_thinking` on Tiny Aya gave an empty reply; the legacy rope key was accepted |
 | Tiny Aya M2 | 6 | 11 → 8 confirmed (7 distinct), all fixed; 3 refuted, 2 of them added anyway as cheap checks | no model bug; untied heads accepted; the INT4 policy missed the fused qkv; the length cap only in create_app; test gaps found by 63 planted bugs |
+| Tiny Aya M4 | 7 | 9 → 8 confirmed (6 distinct), all fixed; 1 refuted, its wording adopted | the new int8 calibration mode broke the bf16 one (no test runs the script); an interrupted quantize destroyed the earlier .qt; the served-KL mask left out BOS and the reply's first prediction |

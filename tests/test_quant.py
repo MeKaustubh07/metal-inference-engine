@@ -87,6 +87,17 @@ with tempfile.TemporaryDirectory() as d:
           and torch.equal(qa.mins, direct.mins) and torch.equal(f.get("n.weight"), src.t["n.weight"]))
     del f, qa
 
+# 5b. bounded memory (Tiny Aya's 262k-row embedding): quantize() works in whole-row chunks, bit-identical to one piece;
+# save_qt writes the header first and then one tensor at a time, and checks the bytes it wrote against the header
+import quant as quant_module
+w, same = torch.randn(1000, 64), True
+for sch in ("int8", "int4"):
+    quant_module.CHUNK = 100; a = quantize(w, sch)
+    quant_module.CHUNK = 1 << 30; b = quantize(w, sch)
+    same &= torch.equal(a.data, b.data) and torch.equal(a.scales, b.scales) and (a.mins is None or torch.equal(a.mins, b.mins))
+quant_module.CHUNK = 1 << 24
+check("quantize() in row chunks == in one piece (int8 and int4, bit for bit)", same)
+
 # 6. model accuracy: bf16 vs int8 vs int4 on the Metal backend
 D = "models/qwen3.5-0.8b"
 WEIGHTS = f"{D}/model.safetensors-00001-of-00001.safetensors"

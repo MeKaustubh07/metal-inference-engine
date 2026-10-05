@@ -118,7 +118,15 @@ scripts/.venv/bin/python scripts/golden_aya.py
 ```
 
 (`golden_tokens.py` makes the tokenizer's answer key; `golden_aya.py` the real model's: transformers' own layers one
-at a time in fp32, ~3.5 min and ~2.7 GB)
+at a time in fp32, ~3.5 min and ~2.7 GB). The quantized files (~25 s each; INT4 with the calibrated policy):
+
+```bash
+scripts/.venv/bin/python scripts/quantize.py models/tiny-aya-global/model.safetensors.index.json models/tiny-aya-global/model.int8.qt --scheme int8
+```
+
+```bash
+scripts/.venv/bin/python scripts/quantize.py models/tiny-aya-global/model.safetensors.index.json models/tiny-aya-global/model.int4.qt --scheme int4 --policy configs/quant/tiny-aya-global.json
+```
 
 Then:
 
@@ -126,12 +134,12 @@ Then:
 scripts/.venv/bin/python scripts/run_tests.py
 ```
 
-`--quick` skips the cache, quantization, Qwen3.5, Tiny Aya model, serving, prefill and decision suites (it runs
-tokenizer, aya, cohere2, sampling, paged, kernels and native). The 15 suites cover the tokenizer (both models vs HF),
+`--quick` skips the cache, quantization, Qwen3.5, Tiny Aya model and quant, serving, prefill and decision suites (it
+runs tokenizer, aya, cohere2, sampling, paged, kernels and native). The 16 suites cover the tokenizer (both models vs HF),
 Tiny Aya's files (config, sharded weights, chat template, registry, server routing), the Cohere2 model vs HF on small
 random models (every layer, greedy, caches, batching, the sliding-window guard) and the real 3.35B Tiny Aya in fp32
 streamed one layer at a time (every layer, logits, decode steps and greedy vs the answer key; 5 languages, code and
-chat), sampling (incl. batched == per-request), the hybrid cache
+chat), Tiny Aya in INT8 and INT4 on Metal vs that key (KL, top-1 flips), sampling (incl. batched == per-request), the hybrid cache
 (cached == uncached, KV and DeltaNet byte accounting, MPS fp32/bf16 and Metal), paged state (isolation, running out
 of blocks or state slots), kernels, native runtime, quantization, Qwen3.5-0.8B vs HF fp32 (every layer),
 Qwen3.5-2B (bf16/INT8/INT4), the server (batched == sequential, preemption, streaming, 429, cancellation, drain)

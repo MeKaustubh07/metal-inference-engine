@@ -187,10 +187,14 @@ check(f"registry: index weights, chat from the model's template, no thinking mod
 check(f"registry: the card's sampling {spec['sampling']}; max_model_len {spec['max_model_len']} <= the sliding window",
       spec["sampling"] == dict(temperature=0.1, top_p=0.95, top_k=50, repetition_penalty=1.0)
       and spec["max_model_len"] <= cfg.sliding_window)
-try:
-    load_engine("tiny-aya-global"); check("load_engine refuses until the cohere2 model class exists", False)
-except NotImplementedError:
-    check("load_engine refuses until the cohere2 model class exists", True)
+refused = []
+for be in ("cpu", "mps", "metal"):                     # fp32 on the CPU (13.4 GB) or bf16 (6.7 GB) do not fit in 8 GB
+    try:
+        load_engine("tiny-aya-global", be)
+    except ValueError:
+        refused.append(be)
+check(f"load_engine refuses Tiny Aya on the unquantized backends ({', '.join(refused)}), before loading anything",
+      refused == ["cpu", "mps", "metal"])
 plain = prompt_ids(tok, "", "Is the sky blue?", False, aya)
 chatted = prompt_ids(tok, "", "Is the sky blue?", True, aya)
 opts = [option_ids(tok, o, c) for o in ("Yes", " No") for c in (True, False)]

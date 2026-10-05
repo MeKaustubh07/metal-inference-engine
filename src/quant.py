@@ -13,12 +13,15 @@ at higher precision too).
 """
 import json
 import mmap
+import os
 import struct
 from dataclasses import dataclass
 
 import torch
 
 BLOCK = 32
+CHUNK = 1 << 24                 # weights quantized at a time (64 MB per fp32 temporary): the 262k-row tied embedding
+                                # of Tiny Aya would need ~6.5 GB of temporaries in one piece
 
 
 @dataclass
@@ -54,9 +57,21 @@ class QuantTensor:
 
 
 def quantize(w: torch.Tensor, scheme: str, block: int = BLOCK) -> QuantTensor:
+    """Quantize a [N, K] weight, CHUNK weights (whole rows) at a time. Blocks never cross rows, so the result is
+    bit-identical to quantizing the whole tensor in one piece."""
     N, K = w.shape
     if K % block:
         raise ValueError(f"K={K} is not a multiple of the block size {block}")
+    if scheme not in ("int8", "int4"):
+        raise ValueError(f"unknown scheme {scheme}")
+    rows = max(1, CHUNK // K)
+    if N <= rows:
+        return _quantize_rows(w, scheme, block)
+    return concat_rows([_quantize_rows(w[r:r + rows], scheme, block) for r in range(0, N, rows)])
+
+
+def _quantize_rows(w: torch.Tensor, scheme: str, block: int) -> QuantTensor:
+    N, K = w.shape
     x = w.float().view(N, K // block, block)
     if scheme == "int8":
         scales16 = (x.abs().amax(-1) / 127).clamp(min=1e-12).to(torch.float16)
@@ -143,33 +158,63 @@ _DT = {torch.int8: "I8", torch.uint8: "U8", torch.float16: "F16", torch.bfloat16
 _TD = {v: k for k, v in _DT.items()}
 
 
+def _quantized_parts(name: str, t: torch.Tensor, scheme: str) -> list[tuple[str, torch.dtype, list[int]]]:
+    """The tensors a weight becomes in the file, with dtype and shape, known before quantizing it."""
+    N, K = t.shape
+    parts = [(name + "::q", torch.int8 if scheme == "int8" else torch.uint8, [N, K if scheme == "int8" else K // 2]),
+             (name + "::s", torch.float16, [N, K // BLOCK])]
+    return parts + ([(name + "::m", torch.float16, [N, K // BLOCK])] if scheme == "int4" else [])
+
+
+def _bytes(t: torch.Tensor) -> bytes:
+    t = t.contiguous()
+    return (t.view(torch.uint8) if t.dtype == torch.bfloat16 else t).numpy().tobytes()
+
+
 def save_qt(path: str, source, scheme: str, log=print, keep_int8: frozenset = frozenset()) -> None:
-    """Stream tensors from `source` (anything with tensor_names()/get()) into a quantized .qt file."""
-    header, chunks, offset = {"__metadata__": {"scheme": scheme, "block": str(BLOCK)}}, [], 0
-
-    def add(key: str, t: torch.Tensor) -> None:
-        nonlocal offset
-        b = t.contiguous().view(torch.uint8).numpy().tobytes() if t.dtype == torch.bfloat16 else t.contiguous().numpy().tobytes()
-        header[key] = {"dtype": _DT[t.dtype], "shape": list(t.shape), "data_offsets": [offset, offset + len(b)]}
-        chunks.append(b); offset += len(b)
-
+    """Stream tensors from `source` (anything with tensor_names()/get()) into a quantized .qt file, one tensor in
+    memory at a time: every tensor's size follows from its shape and scheme, so the header is written first and
+    each tensor is quantized, written and dropped in turn. It goes to a temporary file that replaces `path` only once
+    it is complete, so an interrupted run leaves any earlier file as it was."""
+    header, offset, plan = {"__metadata__": {"scheme": scheme, "block": str(BLOCK)}}, 0, []
     for name in source.tensor_names():
-        t = source.get(name)
+        t = source.get(name)                                         # a view of the file: nothing is read yet
         if should_quantize(name, t):
-            q = quantize(t, scheme_for(name, scheme, keep_int8))
-            add(name + "::q", q.data); add(name + "::s", q.scales)
-            if q.mins is not None:
-                add(name + "::m", q.mins)
-            header[name + "::q"]["logical_shape"] = list(q.shape)
-            header[name + "::q"]["scheme"] = q.scheme
+            sch = scheme_for(name, scheme, keep_int8)
+            for key, dt, shape in _quantized_parts(name, t, sch):
+                n = torch.Size(shape).numel() * torch.tensor([], dtype=dt).element_size()
+                header[key] = {"dtype": _DT[dt], "shape": shape, "data_offsets": [offset, offset + n]}
+                offset += n
+            header[name + "::q"] |= {"logical_shape": list(t.shape), "scheme": sch}
+            plan.append((name, sch))
         else:
-            add(name, t)
+            n = t.numel() * t.element_size()
+            header[name] = {"dtype": _DT[t.dtype], "shape": list(t.shape), "data_offsets": [offset, offset + n]}
+            offset += n
+            plan.append((name, None))
     hb = json.dumps(header).encode()
     hb += b" " * (-len(hb) % 8)                                      # keep the data section 8-byte aligned
-    with open(path, "wb") as f:
-        f.write(struct.pack("<Q", len(hb))); f.write(hb)
-        for c in chunks:
-            f.write(c)
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "wb") as f:
+            f.write(struct.pack("<Q", len(hb))); f.write(hb)
+            for name, sch in plan:
+                t = source.get(name)
+                if sch is None:
+                    f.write(_bytes(t))
+                    continue
+                q = quantize(t, sch)
+                for part in (q.data, q.scales) + ((q.mins,) if q.mins is not None else ()):
+                    f.write(_bytes(part))
+                del q
+            written = f.tell() - 8 - len(hb)
+        if written != offset:
+            raise RuntimeError(f"{path}: wrote {written} bytes of tensor data, the header promised {offset}")
+        os.replace(tmp, path)
+    except BaseException:                                            # Ctrl-C included: no half-written file is left
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
     log(f"wrote {path}: {offset / 1e9:.2f} GB of tensor data")
 
 
@@ -184,6 +229,9 @@ class QtFile:
         meta = self._h.pop("__metadata__")
         self.scheme = meta["scheme"]
         self._start = 8 + n
+        end = self._start + max((e["data_offsets"][1] for e in self._h.values()), default=0)
+        if end > len(self._mm):
+            raise ValueError(f"{path}: {len(self._mm)} bytes, but its header needs {end} (an interrupted write?)")
 
     def _raw(self, key: str) -> torch.Tensor:
         e = self._h[key]

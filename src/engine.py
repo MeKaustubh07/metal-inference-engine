@@ -8,7 +8,8 @@ import torch
 from backend.metal import MetalBackend
 from backend.torch_ref import TorchBackend
 from chat import TemplateChat
-from config import Qwen35Config
+from config import Cohere2Config, Qwen35Config
+from models.cohere2 import Cohere2Model
 from models.qwen3_5 import Qwen35Model
 from quant import QtFile
 from tokenizer import Tokenizer
@@ -27,13 +28,15 @@ MODELS = {
     # Tiny Aya Global (Cohere2). chat "template": the model's own Jinja template, read from its tokenizer_config.json.
     # Stops: <EOS_TOKEN>, <|END_OF_TURN_TOKEN|>, <|END_RESPONSE|>. Sampling: the model card's. max_model_len: the
     # sliding window, below which sliding layers equal full causal attention (window support comes later). No
-    # thinking mode. policy: written by scripts/calibrate_quant.py (milestone M4); until then INT4 warns.
+    # thinking mode. policy: written by scripts/calibrate_quant.py; until then INT4 warns. backends: only the
+    # quantized Metal ones fit in 8 GB (fp32 on the CPU would need 13.4 GB, bf16 on the GPU 6.7 GB).
     "tiny-aya-global": dict(dir="models/tiny-aya-global", family="cohere2", weights="model.safetensors.index.json",
                             eos=[3, 6, 261001], chat="template", policy="configs/quant/tiny-aya-global.json",
                             sampling=dict(temperature=0.1, top_p=0.95, top_k=50, repetition_penalty=1.0),
-                            max_model_len=4096),
+                            max_model_len=4096, backends=("metal-int8", "metal-int4")),
 }
-FAMILIES = {"qwen3_5": (Qwen35Config, Qwen35Model)}         # family -> (config class, model class); cohere2 comes next
+FAMILIES = {"qwen3_5": (Qwen35Config, Qwen35Model),          # family -> (config class, model class)
+            "cohere2": (Cohere2Config, Cohere2Model)}
 
 
 @dataclass
@@ -72,6 +75,8 @@ def load_engine(name: str, backend: str = "metal", weights_file: str | None = No
     d = ROOT / spec["dir"]
     if spec["family"] not in FAMILIES:
         raise NotImplementedError(f"{name}: no model class for family {spec['family']!r} yet")
+    if "backends" in spec and backend not in spec["backends"]:
+        raise ValueError(f"{name} runs on {' or '.join(spec['backends'])} on this machine, not {backend}")
     config_cls, model_cls = FAMILIES[spec["family"]]
     cfg, tok = config_cls.from_json(str(d / "config.json")), Tokenizer(str(d / "tokenizer.json"))
     # logits are cut to tokenizer.vocab_size() (the head may be padded past it): the ids must be contiguous, and every

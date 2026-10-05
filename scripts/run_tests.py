@@ -1,7 +1,7 @@
 """Run every test script in sequence (each needs the model weights) and summarize. Exit 1 if any fails.
 
 usage: run_tests.py [--quick] [--save DIR]
-  --quick     skips the cache, quantization, Qwen3.5, Tiny Aya model, serving, prefill and decision suites
+  --quick     skips the cache, quantization, Qwen3.5, Tiny Aya model and quant, serving, prefill and decision suites
   --save DIR  writes each suite's output to DIR/<suite>.txt and this summary, with timings, to DIR/run_tests.txt
 """
 import subprocess
@@ -11,10 +11,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = ["test_tokenizer", "test_aya", "test_cohere2", "test_sampling", "test_cache", "test_paged", "test_kernels",
-         "test_native", "test_quant", "test_qwen35", "test_qwen35_2b", "test_aya_model", "test_server", "test_prefill",
-         "test_decision"]
-SLOW = {"test_cache", "test_quant", "test_qwen35", "test_qwen35_2b", "test_aya_model", "test_server", "test_prefill",
-        "test_decision"}
+         "test_native", "test_quant", "test_qwen35", "test_qwen35_2b", "test_aya_model", "test_aya_quant", "test_server",
+         "test_prefill", "test_decision"]
+SLOW = {"test_cache", "test_quant", "test_qwen35", "test_qwen35_2b", "test_aya_model", "test_aya_quant", "test_server",
+        "test_prefill", "test_decision"}
 
 
 def main() -> None:

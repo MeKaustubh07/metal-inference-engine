@@ -1,6 +1,7 @@
-"""Quantize a safetensors checkpoint into a .qt file, one tensor at a time. The input is read lazily (memory-mapped),
-but every quantized tensor stays in RAM until the file is written at the end (an incremental writer is planned for
-Tiny Aya, docs/tiny-aya-plan.md M4), and each tensor briefly needs several fp32 copies of itself.
+"""Quantize a safetensors checkpoint into a .qt file, one tensor at a time. The input is read lazily (memory-mapped);
+save_qt writes the header first, then quantizes, writes and drops each tensor in turn, in whole-row chunks of at most
+2^24 weights, so peak RAM is about one tensor's output plus the checkpoint's mapped pages. The file appears at <out.qt>
+only once it is complete.
 
 usage: quantize.py <model.safetensors | model.safetensors.index.json> <out.qt> --scheme int8|int4
                    [--policy configs/quant/<model>.json] [--prefix P]

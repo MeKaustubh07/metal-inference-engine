@@ -162,6 +162,15 @@ class MetalBackend(TorchBackend):
         kernel(out, x, w.to(self.device).contiguous(), float(eps), d, threads=rows * TG, group_size=TG)
         return out
 
+    def layer_norm(self, x, w, eps):
+        x = x.float().contiguous()
+        out = torch.empty_like(x)
+        d = x.shape[-1]
+        rows = x.numel() // d
+        self.lib.layer_norm(out, x, w.to(self.device, torch.float32).contiguous(), float(eps), d,
+                            threads=rows * TG, group_size=TG)
+        return out
+
     def rope(self, x, positions, theta):
         x = x.float().contiguous()
         T, H, d = x.shape

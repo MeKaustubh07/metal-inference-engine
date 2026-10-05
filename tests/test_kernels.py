@@ -1,4 +1,5 @@
-"""Weeks 9-10: every Metal kernel vs the torch reference op at Qwen3.5-0.8B shapes, micro-benchmarks, weight locking."""
+"""Weeks 9-10: every Metal kernel vs the torch reference op at Qwen3.5-0.8B shapes (and Tiny Aya's: LayerNorm,
+16/4 x 128 attention), micro-benchmarks, weight locking."""
 import sys
 import time
 import torch
@@ -39,6 +40,14 @@ w = (torch.randn(1024) * 0.1).to(torch.bfloat16).to(dev)
 x = torch.randn(7, 1024, device=dev) * 3
 d = maxdiff(mb.rms_norm(x, w, 1e-6), ops.rms_norm(x, w, 1e-6))
 check(f"rms_norm (bf16 weights) T=7 max|diff|={d:.1e}", d < 1e-4)
+
+# layer_norm (Tiny Aya): fp32 weights over hidden rows of 2048; inputs with a large common offset, where a wrong mean
+# subtraction would show
+for shape, offset in (((1, 2048), 0.0), ((7, 2048), 5.0), ((64, 2048), 100.0)):
+    w = 1 + torch.randn(shape[-1], device=dev) * 0.3
+    x = torch.randn(*shape, device=dev) * 3 + offset
+    d = maxdiff(mb.layer_norm(x, w, 1e-5), ops.layer_norm(x, w, 1e-5))
+    check(f"layer_norm x{list(shape)} (offset {offset:g}) max|diff|={d:.1e}", d < 1e-4)
 
 # rope on the rotary slice (8 query + 2 key heads, first 64 of 256 dims), large positions too
 for pos in (torch.arange(5), torch.tensor([0, 1, 700, 4095, 31999])):
@@ -99,6 +108,12 @@ for S, scale, Hq, d in ((1, 1, 8, 256), (5, 1, 8, 256), (300, 1, 8, 256), (2048,
     t_ours = bench(lambda: mb.attention(q, k, v), 100); t_torch = bench(lambda: ops.attention(q, k, v, causal=True), 100)
     check(f"attention_decode S={S} q-scale {scale} d={d}: max|diff|={diff:.1e} | ours {t_ours:.0f} us vs torch ops {t_torch:.0f} us", diff < 1e-4)
 
+# Tiny Aya's decode attention: 16 query heads sharing 4 KV heads of 128 dims, up to its 4096-token window
+for S in (1, 300, 4096):
+    q = torch.randn(1, 16, 128, device=dev); k = torch.randn(S, 4, 128, device=dev); v = torch.randn(S, 4, 128, device=dev)
+    diff = maxdiff(mb.attention(q, k, v), ops.attention(q, k, v, causal=True))
+    check(f"attention_decode Tiny Aya shape S={S} 16/4 heads d=128: max|diff|={diff:.1e}", diff < 1e-4)
+
 # paged decode attention: 5 sequences of different lengths in one dispatch, each reading its keys/values in place
 # through a scrambled block table, vs the reference gather-then-attend (TorchBackend on MPS, fp32)
 from backend.torch_ref import TorchBackend
@@ -109,7 +124,7 @@ nbs = [-(-n // bs) for n in lens_l]
 tabs = [perm[sum(nbs[:i]):sum(nbs[:i + 1])] for i in range(len(lens_l))]
 tables = torch.tensor([t + [0] * (max(nbs) - len(t)) for t in tabs], dtype=torch.int32, device=dev)
 lens = torch.tensor(lens_l, dtype=torch.int32, device=dev)
-for Hq, Hkv, d in ((8, 2, 256), (14, 2, 64)):
+for Hq, Hkv, d in ((8, 2, 256), (14, 2, 64), (16, 4, 128)):                     # the last: Tiny Aya
     kp, vp = torch.randn(32, bs, Hkv, d, device=dev), torch.randn(32, bs, Hkv, d, device=dev)
     q = torch.randn(len(lens_l), Hq, d, device=dev)
     diff = maxdiff(mb.paged_attention(q, kp, vp, tables, lens, bs), rb.paged_attention(q, kp, vp, tables, lens, bs))
