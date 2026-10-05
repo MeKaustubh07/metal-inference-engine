@@ -191,8 +191,8 @@ with tempfile.TemporaryDirectory() as tmp:
     # 7. bf16 KV past the window: paged == contiguous exactly, the same chunking
     m16 = make(kv_dtype=torch.bfloat16)
     def run16(st):
-        return torch.cat([m16.forward(ids[:5], state=st), m16.forward(ids[5:8], state=st),
-                          m16.forward(ids[8:40], state=st)] + [m16.forward(torch.tensor([t]), state=st) for t in (3, 4)])
+        chunks = [m16.forward(ids[a:b], state=st) for a, b in ((0, 5), (5, 8), (8, 40))]
+        return torch.cat(chunks + [m16.forward(torch.tensor([t]), state=st) for t in (3, 4)])
     c = run16(m16.new_state(64))
     g = run16(m16.new_paged_state(m16.new_paged_pool(num_blocks=64, block_size=3, max_seqs=2)))
     check(f"model, bf16 KV past the window: paged (blocks of 3) == contiguous, max difference "

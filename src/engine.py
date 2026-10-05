@@ -26,15 +26,15 @@ MODELS = {
                        eos=[248046, 248044], chat="qwen3.5", thinking=True, policy="configs/quant/qwen3.5-2b.json",
                        sampling=dict(temperature=0.7, top_p=0.8, top_k=20, repetition_penalty=1.0)),
     # Tiny Aya Global (Cohere2). chat "template": the model's own Jinja template, read from its tokenizer_config.json.
-    # Stops: <EOS_TOKEN>, <|END_OF_TURN_TOKEN|>, <|END_RESPONSE|>. Sampling: the model card's. max_model_len: 4096
-    # until the real model is checked past its 4096-token window (the model itself allows its config's 8192). No
+    # Stops: <EOS_TOKEN>, <|END_OF_TURN_TOKEN|>, <|END_RESPONSE|>. Sampling: the model card's. max_model_len: its
+    # config's 8192 (prompt + output), checked past the 4096-token window (tests/test_aya_long*.py). No
     # thinking mode. policy: written by scripts/calibrate_quant.py; until then INT4 warns. backends: only the
     # quantized Metal ones fit in 8 GB (fp32 on the CPU would need 13.4 GB, bf16 on the GPU 6.7 GB). kv_dtype: its KV
     # is 6x Qwen3.5-2B's per token (36 layers x 4 heads x 128), so it is stored in bf16 (the other models keep fp32).
     "tiny-aya-global": dict(dir="models/tiny-aya-global", family="cohere2", weights="model.safetensors.index.json",
                             eos=[3, 6, 261001], chat="template", policy="configs/quant/tiny-aya-global.json",
                             sampling=dict(temperature=0.1, top_p=0.95, top_k=50, repetition_penalty=1.0),
-                            max_model_len=4096, backends=("metal-int8", "metal-int4"), kv_dtype="bfloat16"),
+                            max_model_len=8192, backends=("metal-int8", "metal-int4"), kv_dtype="bfloat16"),
 }
 FAMILIES = {"qwen3_5": (Qwen35Config, Qwen35Model),          # family -> (config class, model class)
             "cohere2": (Cohere2Config, Cohere2Model)}

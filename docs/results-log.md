@@ -261,6 +261,18 @@ The full model in fp32 is 13.4 GB; one layer is 0.31 GB. Both sides run one laye
 | model | sliding layers read only their window's suffix of the KV cache (`read(layer, end, lo)`), full layers everything; the cap is config.max_position_embeddings (8192), refused atomically before any state moves. Tiny random Cohere2 with W = 8 over 40 positions vs HF: every layer 2.2e-6; chunked prefill (6 schedules incl. chunks ending at the window, longer than it, token by token) on contiguous and paged (blocks of 4 and 3) 5.2e-6; greedy 20 tokens to position 26 identical; batched, packed and forks exact; the sliding layers' blocks before the window NaN-poisoned: output unchanged (0.0) |
 | 8K memory | attention scores scaled, masked and softmaxed in place (one [16, T, S] buffer instead of three; bit-identical on the CPU); generate.py prefills in 512-token chunks; the server's cap defaults to the model's own |
 
+## Porting Tiny Aya, M5 part B6-B7: the real model past the window, and the 8192 cap (2026-10-05)
+
+| step | result |
+|---|---|
+| long text | `scripts/long_texts.py`: ~600 tokens each of 8 public-domain texts (Project Gutenberg en, fr, de, es, zh, ja pinned by SHA-256; Wikisource hi, ar at pinned revisions, extracted text pinned by SHA-256), downloaded on demand into the gitignored `models/long_texts/`, never committed. 4,804 tokens with BOS; 950 per language gives 7,603 |
+| long answer key | `golden_aya.py --long`: transformers' own layers one at a time, the prompt in 512-token chunks over one `DynamicCache` (proved exact past the window on a tiny model: chunks 5, 3, 17, 15 vs HF's full forward within 1.8e-6); final norm of every position, logits at 93 rows (every 64th, 4090-4100, the last 8), 10 greedy tokens. 356 s, 2.4 GB peak, 146 MB (gitignored) |
+| engine, fp32 CPU (`test_aya_long`) | the engine's tokenizer gives the key's 4,804 ids; final norm worst row 1.3e-5 before position 4096 and 1.6e-5 after (median 1.8e-6); logits 6.1e-6; 9 decode steps 2.5e-6; greedy 10/10. Sensitivity: the same tokens from 4096 on with the window turned off: worst row 4.1 (median 0.45), so the check can tell a window from none |
+| INT8 / INT4 on Metal (`test_aya_long_quant`) | INT8 KL vs the fp32 key 0.0005 before 4096, 0.0008 after, decode 0.0009, greedy 10/10, identical with a bf16 KV cache (0.0006 / 0.0009 / 0.0009); INT4 0.089 / 0.106 / 0.165, greedy 5/10, also identical with bf16 KV |
+| bf16 KV out to 7.6K tokens (INT4) | fp32 KV vs bf16 KV in lockstep over 7,603 tokens: KL 0.0000 before and after 4096, greedy identical for 32/32 tokens |
+| cap | Tiny Aya's registry max_model_len 4096 -> 8192 (its config's; prompt + output, max_tokens stays <= 4096) |
+| one unexplained failure | the first run had the CPU and Metal parts in one process while the Mac was swapping hard (9.5 GB of swap, Chrome, VS Code and a VM open; 9.2 GB peak footprint). In it, INT8 with a bf16 KV cache gave garbage decode steps (KL 5.2, greedy 1/10) while its prefill was right (KL 0.0009). Not reproduced: 3 fresh-process runs, the split Metal suite, and the same one-process sequence with 1.9 GB of swap all give KL 0.0009 and 10/10. Hypothesis (unconfirmed): under extreme memory pressure a custom-kernel dispatch failed without an error, leaving its output buffer's old contents (prefill uses PyTorch's own ops and was right). Mitigation: the Metal part runs in its own process and frees each KV state and the MPS cache between runs |
+
 ## Review workflows run
 
 | week | agents | findings → confirmed | notable |

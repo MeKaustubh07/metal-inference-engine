@@ -9,10 +9,17 @@ through it (one prompt at a time inside the layer, so no padding), and the head 
 Checked against the full transformers model on small random models (tests/test_cohere2.py).
 
 usage: golden_aya.py [model_dir] [out_dir]     (defaults: models/tiny-aya-global, tests/golden_aya; gitignored)
+       golden_aya.py --long [model_dir] [out_dir] (default out: tests/golden_aya_long; gitignored)
 Saved per prompt (<out_dir>/<i>.pt): text, chat, ids (HF tokenizer); for the raw prompts embed, l{i}_out for all 36
 layers, final_norm and the logits of every position; for the chat prompts final_norm of every position and the logits
 of the last 8 (the ~360-token template preamble makes every layer and every logit too large to keep); greedy: 10
 argmax tokens, no stopping, and step_logits: the logits each of the 9 decode steps produced.
+
+--long (M5): one prompt past the 4096-token sliding window, ~600 tokens of public-domain text in each of 8 languages
+(scripts/long_texts.py, downloaded on demand), ~4.8K tokens with BOS. It is prefilled in LONG_CHUNK-token chunks over
+one DynamicCache (exact past the window: tests/test_window.py). Saved (<out_dir>/0.pt): ids, final_norm of every
+position, the logits of the rows in long_rows() (every 64th, the window's edge 4090-4100, the last 8) and 10 greedy
+tokens with the step_logits of the 9 decode steps.
 """
 import json
 import os
@@ -147,7 +154,48 @@ CHAT = ["What is the capital of France? Answer in one word.",
         "भारत की राजधानी क्या है? एक शब्द में उत्तर दें।"]
 
 
+LONG_TOKENS_PER_LANGUAGE = 600          # 8 languages -> ~4.8K tokens, past the 4096-token window
+LONG_CHUNK = 512                        # prefill tokens per pass (bounds the [heads, T, S] attention scores)
+
+
+def long_rows(n: int) -> list[int]:
+    """The rows whose logits the long key keeps: every 64th, the window's edge (4090-4100), the last 8."""
+    return sorted(set(range(0, n, 64)) | set(range(4090, min(4101, n))) | set(range(max(0, n - 8), n)))
+
+
+def main_long(d: str, out: Path) -> None:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import long_texts
+    tok, ref = AutoTokenizer.from_pretrained(d), StreamedCohere2(d)
+
+    class Enc:
+        @staticmethod
+        def encode(text):
+            return tok(text, add_special_tokens=False)["input_ids"]
+    ids = tok(long_texts.build(Enc, LONG_TOKENS_PER_LANGUAGE))["input_ids"]          # BOS first: a raw prompt
+    t0, cache, hs = time.perf_counter(), DynamicCache(config=ref.config), []
+    for i in range(0, len(ids), LONG_CHUNK):
+        hs.append(ref.run_all([ids[i:i + LONG_CHUNK]], [cache])[0])
+        print(f"  {time.perf_counter() - t0:5.0f} s  prefill {min(i + LONG_CHUNK, len(ids))}/{len(ids)}", flush=True)
+    h = torch.cat(hs)
+    rows = long_rows(len(ids))
+    logits = ref.head(h[rows])
+    greedy, steps = [int(logits[-1].argmax())], []
+    for _ in range(9):
+        lg = ref.head(ref.run_all([[greedy[-1]]], [cache])[0][-1:])[0]
+        greedy.append(int(lg.argmax())); steps.append(lg)
+    torch.save({"ids": torch.tensor(ids), "final_norm": h.clone(), "rows": torch.tensor(rows), "logits": logits.clone(),
+                "greedy": torch.tensor(greedy), "step_logits": torch.stack(steps),
+                "tokens_per_language": LONG_TOKENS_PER_LANGUAGE, "languages": list(long_texts.SOURCES)}, out / "0.pt")
+    print(f"{len(ids)} tokens, {len(rows)} logit rows -> {tok.decode(greedy)!r} in {time.perf_counter() - t0:.0f} s")
+
+
 def main() -> None:
+    if "--long" in sys.argv:
+        args = [a for a in sys.argv[1:] if a != "--long"]
+        out = Path(args[1] if len(args) > 1 else "tests/golden_aya_long")
+        out.mkdir(parents=True, exist_ok=True)
+        return main_long(args[0] if args else "models/tiny-aya-global", out)
     d = sys.argv[1] if len(sys.argv) > 1 else "models/tiny-aya-global"
     out = Path(sys.argv[2] if len(sys.argv) > 2 else "tests/golden_aya")
     out.mkdir(parents=True, exist_ok=True)

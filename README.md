@@ -117,8 +117,14 @@ scripts/.venv/bin/python scripts/golden_tokens.py models/tiny-aya-global tests/g
 scripts/.venv/bin/python scripts/golden_aya.py
 ```
 
+```bash
+scripts/.venv/bin/python scripts/golden_aya.py --long
+```
+
 (`golden_tokens.py` makes the tokenizer's answer key; `golden_aya.py` the real model's: transformers' own layers one
-at a time in fp32, ~3.5 min and ~2.7 GB). The quantized files (~25 s each; INT4 with the calibrated policy):
+at a time in fp32, ~3.5 min and ~2.7 GB; `--long`, a 4,804-token key past the 4096-token sliding window, ~6 min and
+2.4 GB, from public-domain texts in 8 languages that `scripts/long_texts.py` downloads, pinned by SHA-256, into the
+gitignored `models/long_texts/`). The quantized files (~25 s each; INT4 with the calibrated policy):
 
 ```bash
 scripts/.venv/bin/python scripts/quantize.py models/tiny-aya-global/model.safetensors.index.json models/tiny-aya-global/model.int8.qt --scheme int8
@@ -134,13 +140,16 @@ Then:
 scripts/.venv/bin/python scripts/run_tests.py
 ```
 
-`--quick` skips the cache, quantization, Qwen3.5, Tiny Aya model and quant, serving, prefill and decision suites (it
-runs tokenizer, aya, cohere2, window, sampling, paged, kernels and native). The 17 suites cover the tokenizer (both models vs HF),
+`--quick` skips the cache, quantization, Qwen3.5, Tiny Aya model / long / quant, serving, prefill and decision suites
+(it runs tokenizer, aya, cohere2, window, sampling, paged, kernels and native). The 19 suites cover the tokenizer (both
+models vs HF),
 Tiny Aya's files (config, sharded weights, chat template, registry, server routing), the Cohere2 model vs HF on small
 random models (every layer, greedy, caches, batching, bf16 KV, the length cap), the sliding window (exhaustively vs a
 float64 oracle, and the model vs HF past the window on every path, freed blocks poisoned) and the real 3.35B Tiny Aya in fp32
 streamed one layer at a time (every layer, logits, decode steps and greedy vs the answer key; 5 languages, code and
-chat), Tiny Aya in INT8 and INT4 on Metal vs that key (KL, top-1 flips), sampling (incl. batched == per-request), the hybrid cache
+chat) and past its 4096-token window on a 4,804-token text in 8 languages (every position, logits, decode, greedy,
+and a window-off sensitivity check), Tiny Aya in INT8 and INT4 on Metal vs both keys (KL, top-1 flips, fp32 and bf16
+KV, the bf16 KV cache out to 7.6K tokens), sampling (incl. batched == per-request), the hybrid cache
 (cached == uncached, KV and DeltaNet byte accounting, MPS fp32/bf16 and Metal), paged state (isolation, running out
 of blocks or state slots), kernels, native runtime, quantization, Qwen3.5-0.8B vs HF fp32 (every layer),
 Qwen3.5-2B (bf16/INT8/INT4), the server (batched == sequential, preemption, streaming, 429, cancellation, drain)

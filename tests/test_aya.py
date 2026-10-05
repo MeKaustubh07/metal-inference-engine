@@ -184,9 +184,9 @@ check(f"registry: index weights, chat from the model's template, no thinking mod
       os.path.exists(ROOT / spec["dir"] / spec["weights"])
       and isinstance(chat_style(spec, ROOT / spec["dir"]), TemplateChat) and not spec.get("thinking")
       and list(stops.values()) == ["<EOS_TOKEN>", "<|END_OF_TURN_TOKEN|>", "<|END_RESPONSE|>"])
-check(f"registry: the card's sampling {spec['sampling']}; max_model_len {spec['max_model_len']} <= the sliding window",
+check(f"registry: the card's sampling {spec['sampling']}; max_model_len {spec['max_model_len']} == the config's",
       spec["sampling"] == dict(temperature=0.1, top_p=0.95, top_k=50, repetition_penalty=1.0)
-      and spec["max_model_len"] <= cfg.sliding_window)
+      and spec["max_model_len"] == cfg.max_position_embeddings == 8192)
 refused = []
 for be in ("cpu", "mps", "metal"):                     # fp32 on the CPU (13.4 GB) or bf16 (6.7 GB) do not fit in 8 GB
     try:
@@ -245,7 +245,7 @@ class RecordingScheduler:
 
 app_module.Scheduler = RecordingScheduler
 eng = Engine("tiny-aya-global", None, tok, set(spec["eos"]), aya, spec["sampling"], spec["max_model_len"])
-app = app_module.create_app(eng, max_model_len=8192)
+app = app_module.create_app(eng, max_model_len=10000)
 sched = app.state.scheduler
 
 async def post(path, body):
@@ -257,7 +257,7 @@ def chat(*msgs, **extra):
     return asyncio.run(post("/v1/chat/completions", {"messages": [{"role": r, "content": c} for r, c in msgs],
                                                       "max_tokens": 4, **extra}))
 
-check("create_app(max_model_len=8192) gives the scheduler the model's own cap, 4096", sched.max_model_len == 4096)
+check("create_app(max_model_len=10000) gives the scheduler the model's own cap, 8192", sched.max_model_len == 8192)
 check("create_app() without max_model_len uses the model's own cap; an explicit smaller one still lowers it",
       app_module.create_app(eng).state.scheduler.max_model_len == spec["max_model_len"]
       and app_module.create_app(eng, max_model_len=1000).state.scheduler.max_model_len == 1000)
@@ -273,8 +273,8 @@ for msgs, why in ((((U, "a"), (U, "b")), "two user turns"), (((S, "s"), (A, "x")
     check(f"/v1/chat/completions: {why} -> 400 from the template, not 500", code == 400 and "alternate" in text)
 code, text = chat((U, "Hi"), enable_thinking=True)
 check("/v1/chat/completions: enable_thinking on a model without a thinking mode -> 400", code == 400 and "thinking" in text)
-code, text = asyncio.run(post("/v1/decide", {"type": "boolean", "question": "Is it?", "context": "word " * 5000}))
-check("/v1/decide: a context past the model's 4096-token cap -> 400", code == 400 and "exceeds 4096" in text)
+code, text = asyncio.run(post("/v1/decide", {"type": "boolean", "question": "Is it?", "context": "word " * 9000}))
+check("/v1/decide: a context past the model's 8192-token cap -> 400", code == 400 and "exceeds 8192" in text)
 
 # 8. licence guard: no copy of a gated file, and no copy of the template's text (however it is wrapped), in anything
 # a commit can contain: the working tree and the staged index

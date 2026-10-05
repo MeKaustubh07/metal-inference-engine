@@ -1,7 +1,8 @@
 """Run every test script in sequence (each needs the model weights) and summarize. Exit 1 if any fails.
 
 usage: run_tests.py [--quick] [--save DIR]
-  --quick     skips the cache, quantization, Qwen3.5, Tiny Aya model and quant, serving, prefill and decision suites
+  --quick     skips the cache, quantization, Qwen3.5, Tiny Aya model / long / quant, serving, prefill and decision
+              suites
   --save DIR  writes each suite's output to DIR/<suite>.txt and this summary, with timings, to DIR/run_tests.txt
 """
 import subprocess
@@ -11,10 +12,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = ["test_tokenizer", "test_aya", "test_cohere2", "test_window", "test_sampling", "test_cache", "test_paged",
-         "test_kernels", "test_native", "test_quant", "test_qwen35", "test_qwen35_2b", "test_aya_model", "test_aya_quant",
-         "test_server", "test_prefill", "test_decision"]
-SLOW = {"test_cache", "test_quant", "test_qwen35", "test_qwen35_2b", "test_aya_model", "test_aya_quant", "test_server",
-        "test_prefill", "test_decision"}
+         "test_kernels", "test_native", "test_quant", "test_qwen35", "test_qwen35_2b", "test_aya_model",
+         "test_aya_long", "test_aya_long_quant", "test_aya_quant", "test_server", "test_prefill", "test_decision"]
+SLOW = {"test_cache", "test_quant", "test_qwen35", "test_qwen35_2b", "test_aya_model", "test_aya_long",
+        "test_aya_long_quant", "test_aya_quant", "test_server", "test_prefill", "test_decision"}
 
 
 def main() -> None:
@@ -32,7 +33,7 @@ def main() -> None:
         passes, fails, skips = r.stdout.count("PASS"), r.stdout.count("FAIL"), r.stdout.count("SKIP")
         skipped += skips
         status = "ok  " if r.returncode == 0 else "FAIL"
-        say(f"{status} {name:16s} {passes:3d} pass {fails:2d} fail  {time.perf_counter() - t0:6.1f}s"
+        say(f"{status} {name:19s} {passes:3d} pass {fails:2d} fail  {time.perf_counter() - t0:6.1f}s"
             + (f"  ({skips} skipped: needs files not in the repo)" if skips else ""))
         if save:
             (save / f"{name}.txt").write_text(r.stdout)
