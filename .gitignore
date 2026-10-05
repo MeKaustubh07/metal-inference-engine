@@ -8,3 +8,4 @@ build/
 tests/golden_qwen35/
 tests/golden_qwen35_2b/
 tests/golden_tokens_aya.json
+tests/golden_aya/

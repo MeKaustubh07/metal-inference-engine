@@ -15,6 +15,10 @@ same frequencies, and q.k does not change when q and k get the same reordering (
 
 The sliding window itself is not implemented yet. Below sliding_window positions it excludes no key, so a forward
 whose positions stay below it is exact; anything longer is refused rather than silently wrong.
+
+stream=True (the fp32 CPU reference of the real model, which would need 13.4 GB if every widened weight were kept):
+each weight is widened when used and dropped after, the embedding rows are read from the stored table, and the tied
+head is widened HEAD_ROWS rows at a time. Slower, the same numbers; peak memory ~1 layer instead of the model.
 """
 import torch
 
@@ -25,6 +29,7 @@ from quant import concat_rows, select_rows
 from state import ContiguousKVCache, HybridPool, HybridState, PagedKVPool, PagedSequence
 
 P = "model."
+HEAD_ROWS = 32768                 # stream=True: rows of the tied head widened at a time (256 MB at hidden 2048)
 
 
 def interleaved_to_half(n_heads: int, d: int) -> torch.Tensor:
@@ -34,20 +39,30 @@ def interleaved_to_half(n_heads: int, d: int) -> torch.Tensor:
 
 
 class Cohere2Model:
-    def __init__(self, config: Cohere2Config, weights, backend=None):
+    def __init__(self, config: Cohere2Config, weights, backend=None, stream: bool = False):
         self.config = config
         self.weights = weights
         self.b = backend or TorchBackend()
         self._cache: dict[str, torch.Tensor] = {}
+        self.stream = stream
+        if stream and (self.b.device.type != "cpu" or getattr(self.b, "weight_dtype", None) != torch.float32):
+            raise ValueError("stream=True is the fp32 CPU reference mode")
+        names = getattr(weights, "tensor_names", None)
+        if names is not None and "lm_head.weight" in names():         # the head is the embedding (tied): a separate
+            raise ValueError("this checkpoint has a separate lm_head.weight; Cohere2Model ties the head")  # one is refused
 
     # ---------------------------------------------------------------- weights
     def _w(self, name: str):
         """A 2-D weight in the backend's resident format (bf16 / quantized / fp32)."""
+        if self.stream:
+            return self.b.prepare(self.weights.get(P + name), name)
         if name not in self._cache:
             self._cache[name] = self.b.prepare(self.weights.get(P + name), name)
         return self._cache[name]
 
     def _fused(self, key: str, build):
+        if self.stream:
+            return self.b.prepare(build(), key)
         if key not in self._cache:
             self._cache[key] = self.b.prepare(build(), key)
         return self._cache[key]
@@ -89,7 +104,8 @@ class Cohere2Model:
 
     # ---------------------------------------------------------------- layers
     def embed(self, ids: torch.Tensor) -> torch.Tensor:
-        return self.b.embedding(self._w("embed_tokens.weight"), ids.to(self.b.device, non_blocking=True))
+        table = self.weights.get(P + "embed_tokens.weight") if self.stream else self._w("embed_tokens.weight")
+        return self.b.embedding(table, ids.to(self.b.device, non_blocking=True))
 
     def _qkv(self, i: int):
         """Fused [q ; k ; v] projection; on RoPE (sliding) layers, q and k rows reordered for interleaved RoPE."""
@@ -160,7 +176,12 @@ class Cohere2Model:
 
     def head(self, h: torch.Tensor) -> torch.Tensor:
         """Final-norm hidden states [N, hidden] -> logits [N, vocab]: the tied head, times logit_scale."""
-        logits = self.b.linear(h, self._w("embed_tokens.weight"))
+        if self.stream:
+            table = self.weights.get(P + "embed_tokens.weight")
+            logits = torch.cat([self.b.linear(h, self.b.prepare(table[r:r + HEAD_ROWS]))
+                                for r in range(0, table.shape[0], HEAD_ROWS)], dim=1)
+        else:
+            logits = self.b.linear(h, self._w("embed_tokens.weight"))
         return logits * self.config.logit_scale if self.config.logit_scale != 1.0 else logits
 
     def forward(self, ids: torch.Tensor, state: HybridState | None = None, last_only: bool = False,
@@ -182,10 +203,15 @@ class Cohere2Model:
         last = torch.tensor([sg.hi - 1 for sg in segs]).to(self.b.device, non_blocking=True)
         return self.head(self._final_norm(h[last]))
 
-    def packed_hidden(self, chunks: list[tuple[torch.Tensor, HybridState]]) -> torch.Tensor:
-        """Like forward_packed, but -> the final-norm hidden state of EVERY token [N, hidden], rows in chunk order."""
+    def packed_hidden(self, chunks: list[tuple[torch.Tensor, HybridState]],
+                      capture: dict | None = None) -> torch.Tensor:
+        """Like forward_packed, but -> the final-norm hidden state of EVERY token [N, hidden], rows in chunk order.
+        capture gets the packed embedding, every layer's output and the final norm (rows in chunk order too)."""
         ids, positions, segs = pack(chunks, self.b.device)
-        return self._final_norm(self._layers(ids, positions, segs))
+        h = self._final_norm(self._layers(ids, positions, segs, capture))
+        if capture is not None:
+            capture["final_norm"] = h
+        return h
 
     def decode_batch(self, tokens: list[int], states: list) -> torch.Tensor:
         """One decode step for B independent sequences -> logits [B, vocab]. Projections and MLPs run batched (each

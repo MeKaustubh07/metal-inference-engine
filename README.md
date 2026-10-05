@@ -102,7 +102,8 @@ scripts/build_native.sh && scripts/.venv/bin/python scripts/golden_qwen35.py && 
 ```
 
 The Tiny Aya checks need its gated files (accept the terms on the model page, then download a pinned revision; see
-[`docs/tiny-aya-plan.md`](docs/tiny-aya-plan.md)) and a local answer key; without them they print SKIP:
+[`docs/tiny-aya-plan.md`](docs/tiny-aya-plan.md)) and two local answer keys. Without the files they print SKIP; with
+the files but without a key they fail and name the command that makes it:
 
 ```bash
 scripts/.venv/bin/hf download CohereLabs/tiny-aya-global --revision af89d219b53ed9b13b8a4645f9c8028973510324 --local-dir models/tiny-aya-global
@@ -112,16 +113,25 @@ scripts/.venv/bin/hf download CohereLabs/tiny-aya-global --revision af89d219b53e
 scripts/.venv/bin/python scripts/golden_tokens.py models/tiny-aya-global tests/golden_tokens_aya.json
 ```
 
+```bash
+scripts/.venv/bin/python scripts/golden_aya.py
+```
+
+(`golden_tokens.py` makes the tokenizer's answer key; `golden_aya.py` the real model's: transformers' own layers one
+at a time in fp32, ~3.5 min and ~2.7 GB)
+
 Then:
 
 ```bash
 scripts/.venv/bin/python scripts/run_tests.py
 ```
 
-`--quick` skips the cache, quantization, Qwen3.5, serving, prefill and decision suites (it runs tokenizer, aya,
-cohere2, sampling, paged, kernels and native). The 14 suites cover the tokenizer (both models vs HF), Tiny Aya's files
-(config, sharded weights, chat template, registry, server routing), the Cohere2 model vs HF on small random models
-(every layer, greedy, caches, batching, the sliding-window guard), sampling (incl. batched == per-request), the hybrid cache
+`--quick` skips the cache, quantization, Qwen3.5, Tiny Aya model, serving, prefill and decision suites (it runs
+tokenizer, aya, cohere2, sampling, paged, kernels and native). The 15 suites cover the tokenizer (both models vs HF),
+Tiny Aya's files (config, sharded weights, chat template, registry, server routing), the Cohere2 model vs HF on small
+random models (every layer, greedy, caches, batching, the sliding-window guard) and the real 3.35B Tiny Aya in fp32
+streamed one layer at a time (every layer, logits, decode steps and greedy vs the answer key; 5 languages, code and
+chat), sampling (incl. batched == per-request), the hybrid cache
 (cached == uncached, KV and DeltaNet byte accounting, MPS fp32/bf16 and Metal), paged state (isolation, running out
 of blocks or state slots), kernels, native runtime, quantization, Qwen3.5-0.8B vs HF fp32 (every layer),
 Qwen3.5-2B (bf16/INT8/INT4), the server (batched == sequential, preemption, streaming, 429, cancellation, drain)
@@ -163,6 +173,29 @@ src/models/            Qwen3.5, Cohere2, packed prefill src/engine.py       mode
 src/backend/           protocol, torch reference, Metal src/kernels/        *.metal kernels
 src/native/            Objective-C++ Metal runtime      src/server/         scheduler, API, metrics
 scripts/               goldens, bench, quantize, calibrate, serve, loadgen, repl, run_tests
+```
+
+## Tiny Aya (in progress)
+
+The engine is being extended to [Tiny Aya Global](https://huggingface.co/CohereLabs/tiny-aya-global) (Cohere2, 3.35B
+parameters, 70 languages): plan in [`docs/tiny-aya-plan.md`](docs/tiny-aya-plan.md), results in
+[`docs/results-log.md`](docs/results-log.md). Tiny Aya is by Cohere and Cohere Labs. Its weights are not part of this
+repository: they are gated on Hugging Face, licensed
+[CC-BY-NC 4.0 with an Acceptable Use Addendum](https://cohere.com/cohere-labs-cc-by-nc-license), subject to the
+[Cohere Labs Acceptable Use Policy](https://docs.cohere.com/docs/cohere-labs-acceptable-use-policy), and provided as
+is, without warranty. This is an independent, non-commercial project, not affiliated with or endorsed by Cohere; sample
+outputs quoted in `docs/` are model-generated.
+
+```bibtex
+@misc{salamanca2026tinyayabridgingscale,
+      title={Tiny Aya: Bridging Scale and Multilingual Depth},
+      author={Alejandro R. Salamanca and Diana Abagyan and Daniel D'souza and Ammar Khairi and David Mora and Saurabh Dash and Viraat Aryabumi and Sara Rajaee and Mehrnaz Mofakhami and Ananya Sahu and Thomas Euyang and Brittawnya Prince and Madeline Smith and Hangyu Lin and Acyr Locatelli and Sara Hooker and Tom Kocmi and Aidan Gomez and Ivan Zhang and Phil Blunsom and Nick Frosst and Joelle Pineau and Beyza Ermis and Ahmet Üstün and Julia Kreutzer and Marzieh Fadaee},
+      year={2026},
+      eprint={2603.11510},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2603.11510},
+}
 ```
 
 ## License

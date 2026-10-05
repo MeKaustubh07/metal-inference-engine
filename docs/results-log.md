@@ -215,6 +215,18 @@ state instead.
 | the sliding-window guard (window 16) | 16 positions exact; HF's window starts to matter at 17 (logits move 6.6%); fresh, continuing, packed and batched requests past it are refused with no state moved and no KV block taken |
 | review: 3 lenses + 3 verifiers; 63 planted bugs | no model bug; 52 planted bugs caught, 11 missed (3 harmless); new checks catch the 8 others; untied heads refused; Cohere2's fused qkv joins the INT4 policy groups; the scheduler applies the model's own length cap |
 
+## Porting Tiny Aya, M3: the real model, fp32, in 8 GB (2026-10-05)
+
+The full model in fp32 is 13.4 GB; one layer is 0.31 GB. Both sides run one layer at a time.
+
+| step | result |
+|---|---|
+| answer key (`scripts/golden_aya.py`): transformers' own `Cohere2DecoderLayer`s built one at a time from the safetensors files, its mask helpers, rotary embedding and `DynamicCache`; all prompts in lockstep | on random models bit-identical to the full transformers model (also on bf16 shards, with the head in slices and prompts crossing a 16-token window), greedy == an argmax loop over the full model; on Tiny Aya 9 prompts (826 tokens) and 10 greedy tokens each in 212 s, peak RSS 2.68 GB |
+| first attempt | each prompt reloaded all 36 layers at every step (90 passes over 6.7 GB on a Mac already swapping); stopped after ~3 min and rewritten in lockstep (~10 passes) |
+| engine, `Cohere2Model(stream=True)`: weights widened per use and dropped, head in 32,768-row slices; one packed prefill, then batched decode | ids from the engine's tokenizer and chat template == HF's on all 9 prompts; every layer within 6.5e-6 relative (worst single token 9.4e-6), logits 5.7e-6 (worst token 9.2e-6), chat (377-token prompts) final hidden state of every position 1.5e-5 and last-8 logits 9.7e-6 per token, all 81 decode steps' logits 1.4e-5; greedy identical on 9/9 (English, Hindi, Arabic, Chinese, Swahili, Python code, two chats); 178 s, peak RSS 2.69 GB |
+| M3 review (2 lenses + 2 verifiers) | no bug; the fast suite now exercises streaming on bf16 weights (with a record of what is widened), packed captures and the answer key on bf16 shards with the head in slices and prompts crossing the window; the real-model test compares an explicit list of 38 tensors, the embedding bit for bit, per-token errors (the BOS token's activations are up to 50x the others', so whole-tensor errors could have hidden theirs; they did not: per token is ~1.5x) and every decode step's logits; README credits Tiny Aya (licence, AUP, not affiliated, citation) |
+| what Tiny Aya says | "The capital of France is" → " Paris."; Arabic → Cairo; Chinese → Beijing; Swahili → Nairobi; a one-word chat answer → "Paris." then `<|END_RESPONSE|>` (the first stop token a chat turn emits) |
+
 ## Review workflows run
 
 | week | agents | findings → confirmed | notable |

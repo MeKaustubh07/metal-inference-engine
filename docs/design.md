@@ -202,7 +202,7 @@ the same route above 32 rows, so a prompt packed with others keeps fp32 activati
 - **Invariants**: cached == uncached; paged == contiguous; batched == sequential (greedy tokens identical, logits
   within 6e-5 in fp32 on the CPU; bit-identical in bf16 on Metal); preempted == uninterrupted; fused kernels ==
   reference ops; batched kernels == per-row kernels.
-- `scripts/run_tests.py` runs all 14 suites, reports any that skipped, and exits nonzero on any failure.
+- `scripts/run_tests.py` runs all 15 suites, reports any that skipped, and exits nonzero on any failure.
 
 ## 8. Operations
 

@@ -11,6 +11,7 @@ and continuing sequences, packs and mixed batches, with no state moved and no KV
 import os
 import sys
 import tempfile
+import types
 
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 import torch
@@ -21,6 +22,7 @@ hf_logging.disable_progress_bar()
 
 sys.path.insert(0, "src")
 import models.cohere2 as cohere2_module
+from backend.torch_ref import TorchBackend
 from config import Cohere2Config
 from models.cohere2 import Cohere2Model
 from weight_loader import SafetensorsFile
@@ -110,6 +112,16 @@ with tempfile.TemporaryDirectory() as tmp:
         step = model.forward(torch.tensor([nxt]), state=state)[0]
         worst = max(worst, rel(step, full))
     check(f"greedy: 12 tokens identical to HF's ({got[:6]} ...)", got == want)
+    sys.path.insert(0, "scripts")
+    from golden_aya import StreamedCohere2                        # the M3 answer-key generator for the real model
+    s_logits, s_greedy = StreamedCohere2(tmp).greedy(prompt.tolist(), 12)
+    check("answer-key generator (one HF layer at a time) == the full HF model bit for bit, same greedy tokens",
+          torch.equal(s_logits, ref_logits) and s_greedy == want)
+    trio = [prompt[:5].tolist(), prompt.tolist(), prompt[3:14].tolist()]   # lockstep: different lengths, own caches
+    t_logits, t_greedy, _ = StreamedCohere2(tmp).greedy_all(trio, 6)
+    ok = all(rel(lg, hf(torch.tensor([p])).logits[0]) < 1e-6 and g == hf_greedy(hf, torch.tensor(p), 6)
+             for p, lg, g in zip(trio, t_logits, t_greedy))
+    check("answer-key generator, 3 prompts of different lengths in lockstep == HF on each alone", ok)
     check(f"cached decode == recomputing the whole sequence, relative error {worst:.1e}", worst < 1e-5)
 
     # 4. paged == contiguous, prompt in two chunks and then decode
@@ -153,6 +165,38 @@ with tempfile.TemporaryDirectory() as tmp:
     h = model.packed_hidden([(prompt, None)])
     check("packed_hidden then head == forward", rel(model.head(h), ref_logits) < 1e-5)
 
+    # streaming (stream=True, the fp32 CPU mode for the real model), on bf16 weights so that widening is real: each
+    # weight widened when used and dropped, the head widened 100 rows at a time (the table never whole); same numbers
+    class Bf16:
+        def get(self, name):
+            return model.weights.get(name).to(torch.bfloat16)
+
+        def tensor_names(self):
+            return model.weights.tensor_names()
+    rows, cohere2_module.HEAD_ROWS = cohere2_module.HEAD_ROWS, 100
+    streamed, normal = Cohere2Model(model.config, Bf16(), stream=True), Cohere2Model(model.config, Bf16())
+    widened, prepare = [], streamed.b.prepare
+    streamed.b.prepare = lambda w, name=None: (widened.append(tuple(w.shape)), prepare(w, name))[1]
+    s_state, n_state = streamed.new_state(64), normal.new_state(64)
+    a = torch.cat([streamed.forward(prompt, state=s_state), streamed.decode_batch([7], [s_state])])
+    b = torch.cat([normal.forward(prompt, state=n_state), normal.decode_batch([7], [n_state])])
+    cohere2_module.HEAD_ROWS = rows
+    kept = [k for k, v in streamed._cache.items() if v.dim() > 1]
+    table_parts = sorted({r for r, _ in widened if r <= 100})
+    check(f"stream=True on bf16 weights: the same logits ({rel(a, b):.1e}), no widened weight kept, and the 512-row "
+          f"table only ever widened in slices of {table_parts[-1]} rows", rel(a, b) < 1e-6 and not kept
+          and (512, 128) not in widened and (100, 128) in widened)
+    for be, why in ((types.SimpleNamespace(device=torch.device("meta")), "a non-CPU backend"),
+                    (TorchBackend("cpu", torch.bfloat16), "bf16 weights on the CPU")):
+        try:
+            Cohere2Model(model.config, model.weights, backend=be, stream=True); check(f"stream=True refuses {why}", False)
+        except ValueError:
+            check(f"stream=True refuses {why}", True)
+    pc = {}                                             # packed_hidden's capture: rows in chunk order, every layer
+    model.packed_hidden([(prompt, None), (prompt[:5], None)], capture=pc)
+    check("packed_hidden(capture=): the whole prompt and a 5-token prefix in one pack, every layer == HF",
+          set(pc) == set(ref) and max(max(rel(pc[k][:23], ref[k]), rel(pc[k][23:], ref[k][:5])) for k in ref) < 1e-5)
+
     # 6. forks: an independent copy of a sequence so far. Both continue at the SAME position with different tokens;
     # the original must not see the copy's write
     base = model.new_state(64)
@@ -164,7 +208,25 @@ with tempfile.TemporaryDirectory() as tmp:
           rel(w, model.forward(torch.tensor(prompt.tolist() + [7, 5]))[-1]) < 1e-5
           and rel(y[0], model.forward(torch.tensor(prompt.tolist() + [9]))[-1]) < 1e-5)
 
-with tempfile.TemporaryDirectory() as tmp:                     # 7. eps: the residual stream's variance grows past
+with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as shards:
+    import golden_aya                                           # 7. the answer key on a checkpoint shaped like the
+    hf16, _ = build(tmp, window=16, seed=4)                     # real one: bf16 in several files (an index), the head
+    hf16.to(torch.bfloat16).save_pretrained(shards, max_shard_size="300KB")      # in 100-row slices, prompts crossing
+    hf = Cohere2ForCausalLM.from_pretrained(shards, dtype=torch.float32, attn_implementation="eager").eval()  # the window
+    long, short = (torch.randint(3, 512, (n,), generator=torch.Generator().manual_seed(n)).tolist() for n in (30, 7))
+    rows, golden_aya.HEAD_ROWS = golden_aya.HEAD_ROWS, 100
+    caps = [{}, {}]
+    k_logits, k_greedy, _ = golden_aya.StreamedCohere2(shards).greedy_all([long, short], 6, caps, keep_from=[20, 0])
+    golden_aya.HEAD_ROWS = rows
+    ok = os.path.exists(f"{shards}/model.safetensors.index.json")
+    for p, lg, g, cap, k0 in zip((long, short), k_logits, k_greedy, caps, (20, 0)):
+        h_logits, h_cap = hf_run(hf, torch.tensor(p))
+        ok &= torch.equal(lg, h_logits[k0:]) and g == hf_greedy(hf, torch.tensor(p), 6) and set(cap) == set(h_cap) \
+            and all(torch.equal(cap[k], h_cap[k]) for k in h_cap)
+    check("answer key on bf16 shards, head in slices, 30 tokens past a 16-token window: every capture and logit "
+          "bit-identical to HF, same greedy", ok)
+
+with tempfile.TemporaryDirectory() as tmp:                     # 8. eps: the residual stream's variance grows past
     hf, make = build(tmp, window=4096, eps=1.0)                 # ~1000 after layer 0, so only a large eps shows
     prompt = torch.randint(3, 512, (23,), generator=torch.Generator().manual_seed(1))   # whether every norm uses it
     ref_logits, ref = hf_run(hf, prompt)
@@ -174,14 +236,18 @@ with tempfile.TemporaryDirectory() as tmp:                     # 7. eps: the res
     check(f"eps 1.0: every layer, the final norm and the logits == HF (worst {worst:.1e})",
           worst < 1e-5 and rel(logits, ref_logits) < 1e-5)
 
-with tempfile.TemporaryDirectory() as tmp:                     # 8. an untied head would be ignored: refused
+with tempfile.TemporaryDirectory() as tmp:                     # 9. an untied head would be ignored: refused
     build(tmp, window=4096, tied=False)
     try:
         Cohere2Config.from_json(f"{tmp}/config.json"); check("a checkpoint with an untied lm_head is refused", False)
     except ValueError:
         check("a checkpoint with an untied lm_head is refused", True)
+    try:
+        golden_aya.StreamedCohere2(tmp); check("... and the answer key refuses it too", False)
+    except ValueError:
+        check("... and the answer key refuses it too", True)
 
-with tempfile.TemporaryDirectory() as tmp:                     # 9. the sliding-window guard
+with tempfile.TemporaryDirectory() as tmp:                     # 10. the sliding-window guard
     hf, make = build(tmp, window=16, seed=2)
     model = make()
     ids = torch.randint(3, 512, (17,), generator=torch.Generator().manual_seed(3))
