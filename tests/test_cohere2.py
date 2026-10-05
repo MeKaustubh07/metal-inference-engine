@@ -5,8 +5,9 @@ a RoPE or LayerNorm mistake cannot hide in the noise), saved with save_pretraine
 layer and the logits (8 query heads per 2 KV heads: Tiny Aya's ratio of 4); that the test notices broken RoPE; the
 LayerNorm eps at every norm; greedy tokens; cached == uncached; paged == contiguous; batched decode == one at a time;
 packed prefill == separate, with a continuing chunk; forks that diverge at the same position; an untied head refused;
-and the sliding-window guard on a model with a 16-token window: exact up to 16 positions, refused past them, for fresh
-and continuing sequences, packs and mixed batches, with no state moved and no KV block taken.
+and the length cap (max_position_embeddings) on a model with an 8-token window and a 16-position cap: exact up to 16
+positions with the window binding, refused past them, for fresh and continuing sequences, packs and mixed batches, with
+no state moved and no KV block taken (the window itself: tests/test_window.py).
 """
 import os
 import sys
@@ -16,64 +17,18 @@ import types
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 import torch
 from transformers import Cohere2Config as HFConfig, Cohere2ForCausalLM
-from transformers.utils import logging as hf_logging
-
-hf_logging.disable_progress_bar()
 
 sys.path.insert(0, "src")
 import models.cohere2 as cohere2_module
 from backend.torch_ref import TorchBackend
 from config import Cohere2Config
 from models.cohere2 import Cohere2Model
-from weight_loader import SafetensorsFile
+from tiny_cohere2 import build, hf_greedy, hf_run, rel
 
 torch.set_grad_enabled(False)
 results = []
 def check(name, ok):
     results.append(bool(ok)); print(f"{'PASS' if ok else 'FAIL'}  {name}")
-
-
-def rel(a, b):
-    return ((a - b).abs().max() / b.abs().max()).item()
-
-
-def build(tmp: str, window: int, seed: int = 0, eps: float = 1e-5, tied: bool = True):
-    """A random 8-layer Cohere2 (sliding, sliding, sliding, full, x2) with 8 query heads per 2 KV heads of 16 dims,
-    saved and loaded by HF and by the engine."""
-    torch.manual_seed(seed)
-    hc = HFConfig(vocab_size=512, hidden_size=128, intermediate_size=320, num_hidden_layers=8, num_attention_heads=8,
-                  num_key_value_heads=2, max_position_embeddings=8192, layer_norm_eps=eps, logit_scale=0.25,
-                  sliding_window=window, rope_parameters={"rope_type": "default", "rope_theta": 50000.0},
-                  tie_word_embeddings=tied, initializer_range=0.3, pad_token_id=0, bos_token_id=1, eos_token_id=2)
-    hf = Cohere2ForCausalLM._from_config(hc, attn_implementation="eager").eval()
-    for m in hf.modules():                                     # LayerNorm weights start at 1: make them matter
-        if type(m).__name__ == "Cohere2LayerNorm":
-            m.weight.copy_(1 + 0.3 * torch.randn_like(m.weight))
-    hf.save_pretrained(tmp)
-    return hf, lambda: Cohere2Model(Cohere2Config.from_json(f"{tmp}/config.json"),
-                                    SafetensorsFile(f"{tmp}/model.safetensors"))
-
-
-def hf_run(hf, ids):
-    """HF logits [T, vocab] and the outputs of the embedding, every layer and the final norm."""
-    cap, hooks = {}, []
-    m = hf.model
-    hooks.append(m.embed_tokens.register_forward_hook(lambda _m, _i, o: cap.__setitem__("embed", o[0])))
-    for i, layer in enumerate(m.layers):
-        hooks.append(layer.register_forward_hook(
-            lambda _m, _i, o, i=i: cap.__setitem__(f"l{i}_out", (o[0] if isinstance(o, tuple) else o)[0])))
-    hooks.append(m.norm.register_forward_hook(lambda _m, _i, o: cap.__setitem__("final_norm", o[0])))
-    logits = hf(ids[None]).logits[0]
-    for h in hooks:
-        h.remove()
-    return logits, cap
-
-
-def hf_greedy(hf, ids, n):
-    out = ids.tolist()
-    for _ in range(n):
-        out.append(int(hf(torch.tensor([out])).logits[0, -1].argmax()))
-    return out[len(ids):]
 
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -302,23 +257,23 @@ with tempfile.TemporaryDirectory() as tmp:                     # 9. an untied he
     except ValueError:
         check("... and the answer key refuses it too", True)
 
-with tempfile.TemporaryDirectory() as tmp:                     # 10. the sliding-window guard
-    hf, make = build(tmp, window=16, seed=2)
+with tempfile.TemporaryDirectory() as tmp:                     # 10. the length cap (max_position_embeddings)
+    hf, make = build(tmp, window=8, seed=2, max_pos=16)          # window 8 binds inside the cap of 16
     model = make()
     ids = torch.randint(3, 512, (17,), generator=torch.Generator().manual_seed(3))
     ref16, _ = hf_run(hf, ids[:16])
-    check(f"window 16: 16 positions are exact (relative error {rel(model.forward(ids[:16]), ref16):.1e})",
-          rel(model.forward(ids[:16]), ref16) < 1e-5)
+    check(f"window 8, cap 16: 16 positions exact, the window binding (relative error "
+          f"{rel(model.forward(ids[:16]), ref16):.1e})", rel(model.forward(ids[:16]), ref16) < 1e-5)
     hf_full = Cohere2ForCausalLM._from_config(HFConfig.from_pretrained(tmp, sliding_window=4096),
                                               attn_implementation="eager").eval()
     hf_full.load_state_dict(hf.state_dict())
-    binds = rel(hf(ids[None]).logits[0, -1], hf_full(ids[None]).logits[0, -1])
-    check(f"window 16: at 17 positions HF's window does exclude a key (logits move by {binds:.1e})", binds > 1e-4)
+    binds = rel(hf(ids[None, :16]).logits[0, -1], hf_full(ids[None, :16]).logits[0, -1])
+    check(f"window 8: at 16 positions HF's window does exclude keys (logits move by {binds:.1e})", binds > 1e-4)
     try:
-        model.forward(ids); check("window 16: a 17-position forward is refused", False)
+        model.forward(ids); check("cap 16: a 17-position forward is refused", False)
     except ValueError:
-        check("window 16: a 17-position forward is refused", True)
-    for kind in ("contiguous", "paged"):                       # a continuing chunk that would cross the window
+        check("cap 16: a 17-position forward is refused", True)
+    for kind in ("contiguous", "paged"):                       # a continuing chunk that would cross the cap
         pool = model.new_paged_pool(num_blocks=16, block_size=4, max_seqs=8)
         st = model.new_state(32) if kind == "contiguous" else model.new_paged_state(pool)
         model.forward(ids[:9], state=st)
@@ -330,7 +285,7 @@ with tempfile.TemporaryDirectory() as tmp:                     # 10. the sliding
         untouched = st.length == 9 and pool.allocator.num_free == free and \
             (kind == "contiguous" or len(st.kv.block_table) == blocks)
         rest = model.forward(ids[9:16], state=st)[-1]                          # and it still continues exactly
-        check(f"window 16, {kind}: a continuing chunk crossing it is refused, nothing moved, then exact",
+        check(f"cap 16, {kind}: a continuing chunk crossing it is refused, nothing moved, then exact",
               refused and untouched and rel(rest, ref16[-1]) < 1e-5)
     pool = model.new_paged_pool(num_blocks=16, block_size=4, max_seqs=8)
     a, b = model.new_paged_state(pool), model.new_paged_state(pool)
@@ -340,10 +295,10 @@ with tempfile.TemporaryDirectory() as tmp:                     # 10. the sliding
         model.forward_packed([(ids[:3], a), (ids[12:17], b)]); refused = False
     except ValueError:
         refused = True
-    check("window 16: a pack with one chunk crossing it is refused whole, nothing moved",
+    check("cap 16: a pack with one chunk crossing it is refused whole, nothing moved",
           refused and a.length == 0 and b.length == 12 and pool.allocator.num_free == free)
     pool = model.new_paged_pool(num_blocks=16, block_size=4, max_seqs=8)
-    a, b = model.new_paged_state(pool), model.new_paged_state(pool)          # the one at the window comes LAST,
+    a, b = model.new_paged_state(pool), model.new_paged_state(pool)          # the one at the cap comes LAST,
     model.forward(ids[:5], state=a)                                          # at a block boundary (16 = 4 x 4)
     model.forward(ids[:16], state=b)
     free, tables = pool.allocator.num_free, (len(a.kv.block_table), len(b.kv.block_table))
@@ -351,7 +306,7 @@ with tempfile.TemporaryDirectory() as tmp:                     # 10. the sliding
         model.decode_batch([5, 5], [a, b]); refused = False
     except ValueError:
         refused = True
-    check("window 16: a batched decode with one sequence at it is refused, no block taken, no state moved",
+    check("cap 16: a batched decode with one sequence at it is refused, no block taken, no state moved",
           refused and (a.length, b.length) == (5, 16) and pool.allocator.num_free == free
           and (len(a.kv.block_table), len(b.kv.block_table)) == tables)
 

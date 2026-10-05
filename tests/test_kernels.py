@@ -49,12 +49,17 @@ for shape, offset in (((1, 2048), 0.0), ((7, 2048), 5.0), ((64, 2048), 100.0)):
     d = maxdiff(mb.layer_norm(x, w, 1e-5), ops.layer_norm(x, w, 1e-5))
     check(f"layer_norm x{list(shape)} (offset {offset:g}) max|diff|={d:.1e}", d < 1e-4)
 
-# rope on the rotary slice (8 query + 2 key heads, first 64 of 256 dims), large positions too
-for pos in (torch.arange(5), torch.tensor([0, 1, 700, 4095, 31999])):
-    x = torch.randn(len(pos), 10, 64, device=dev) * 50
-    ours, ref = mb.rope(x, pos.to(dev), 1e7), ops.rope(x, pos.to(dev), 1e7)
+# rope vs the CPU fp32 reference (transformers' frequencies): Qwen3.5's rotary slice (8 query + 2 key heads, first 64
+# of 256 dims, theta 1e7) and Tiny Aya's 16 + 4 heads of 128 (theta 5e4), at positions up to 8191 and beyond. The
+# angle is position x frequency, so a frequency off in its last bit gives an error that grows with the position
+# (the kernel computed its own pow() until M5: 2e-4 relative at 4095, 4e-4 at 8191); now it must stay flat
+for H, d, theta, pos in ((10, 64, 1e7, torch.arange(5)), (10, 64, 1e7, torch.tensor([0, 1, 700, 4095, 31999])),
+                         (20, 128, 5e4, torch.tensor([0, 386, 4095, 4096, 8191]))):
+    x = torch.randn(len(pos), H, d) * 50
+    ours, ref = mb.rope(x.to(dev), pos.to(dev), theta), ops.rope(x, pos, theta)
     rel = maxdiff(ours, ref) / ref.abs().max().item()
-    check(f"rope H=10 positions up to {int(pos.max())}: relative max|diff|={rel:.1e}", rel < 1e-4)
+    check(f"rope {H} heads d={d} theta {theta:g}, positions up to {int(pos.max())}: relative max|diff| vs the CPU "
+          f"reference {rel:.1e}", rel < 1e-6)
 
 # matvec: every projection shape in Qwen3.5-0.8B (qkvg, o_proj/out_proj, DeltaNet in_proj, gate_up, down) plus the
 # 248,320-row output head, and one synthetic 896x896 +bias row (the bias path, and K % 256 = 128: every Qwen3.5 K is
@@ -153,6 +158,37 @@ for Hq, Hkv, d in ((8, 2, 256), (16, 4, 128)):
     diff = maxdiff(ours, rb.paged_attention(q, kp, vp, tables, lens, bs))
     check(f"paged_attention_decode_bf16 B=5, {Hq}/{Hkv} heads d={d}: == fp32 kernel on the widened pool: {same}, "
           f"max|diff| vs reference {diff:.1e}", same and diff < 1e-4)
+# sliding window (Tiny Aya's 27 sliding layers): the newest query sees only the last W keys. Decode at the window's
+# edges (S = W - 1, W, W + 1, 2W + 3) and at Tiny Aya's 4096 up to 8192, both KV dtypes, vs ops.attention(window=W)
+for kvdt in (torch.float32, torch.bfloat16):
+    worst, cases = 0.0, [(S, W) for W in (1, 16) for S in (1, W - 1, W, W + 1, 2 * W + 3) if S >= 1]
+    for S, W in cases + [(4095, 4096), (4096, 4096), (4097, 4096), (8192, 4096)]:
+        q = torch.randn(1, 16, 128, device=dev)
+        k, v = (torch.randn(S, 4, 128, device=dev).to(kvdt) for _ in range(2))
+        worst = max(worst, maxdiff(mb.attention(q, k, v, window=W), ops.attention(q, k.float(), v.float(), window=W)))
+    check(f"attention_decode{'_bf16' if kvdt == torch.bfloat16 else ''} with a window, 16/4 heads d=128, "
+          f"{len(cases) + 4} cases at W - 1, W, W + 1, 2W + 3 (W 1, 16) and 4095-8192 (W 4096): max|diff| {worst:.1e}",
+          worst < 1e-4)
+# paged: blocks wholly before each sequence's window hold NaN (as if freed or reused): the kernel must never read them
+for kvdt in (torch.float32, torch.bfloat16):
+    for W in (16, 20, 128):
+        lens_w = [1, W, W + 1, 2 * W + 3, 300]
+        nbs_w = [-(-n // bs) for n in lens_w]
+        perm_w = torch.randperm(sum(nbs_w)).tolist()
+        tabs_w = [perm_w[sum(nbs_w[:i]):sum(nbs_w[:i + 1])] for i in range(len(lens_w))]
+        tables_w = torch.tensor([t + [0] * (max(nbs_w) - len(t)) for t in tabs_w], dtype=torch.int32, device=dev)
+        lens_t = torch.tensor(lens_w, dtype=torch.int32, device=dev)
+        kp, vp = (torch.randn(sum(nbs_w), bs, 4, 128, device=dev).to(kvdt) for _ in range(2))
+        q = torch.randn(len(lens_w), 16, 128, device=dev)
+        want = rb.paged_attention(q, kp, vp, tables_w, lens_t, bs, window=W)       # before any poisoning
+        for t, n in zip(tabs_w, lens_w):
+            for b in t[:max(0, n - W) // bs]:
+                kp[b], vp[b] = float("nan"), float("nan")
+        got = mb.paged_attention(q, kp, vp, tables_w, lens_t, bs, window=W)
+        check(f"paged_attention_decode{'_bf16' if kvdt == torch.bfloat16 else ''} window {W}, lengths {lens_w}, blocks "
+              f"before the window NaN: finite, max|diff| {maxdiff(got, want):.1e}",
+              bool(torch.isfinite(got).all()) and maxdiff(got, want) < 1e-4)
+
 # a bf16 tensor bound to a float* kernel reads as garbage without an error: any other dtype must be refused
 for kd, vd in ((torch.float16, torch.float16), (torch.bfloat16, torch.float32)):
     try:

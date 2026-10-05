@@ -26,8 +26,8 @@ MODELS = {
                        eos=[248046, 248044], chat="qwen3.5", thinking=True, policy="configs/quant/qwen3.5-2b.json",
                        sampling=dict(temperature=0.7, top_p=0.8, top_k=20, repetition_penalty=1.0)),
     # Tiny Aya Global (Cohere2). chat "template": the model's own Jinja template, read from its tokenizer_config.json.
-    # Stops: <EOS_TOKEN>, <|END_OF_TURN_TOKEN|>, <|END_RESPONSE|>. Sampling: the model card's. max_model_len: the
-    # sliding window, below which sliding layers equal full causal attention (window support comes later). No
+    # Stops: <EOS_TOKEN>, <|END_OF_TURN_TOKEN|>, <|END_RESPONSE|>. Sampling: the model card's. max_model_len: 4096
+    # until the real model is checked past its 4096-token window (the model itself allows its config's 8192). No
     # thinking mode. policy: written by scripts/calibrate_quant.py; until then INT4 warns. backends: only the
     # quantized Metal ones fit in 8 GB (fp32 on the CPU would need 13.4 GB, bf16 on the GPU 6.7 GB). kv_dtype: its KV
     # is 6x Qwen3.5-2B's per token (36 layers x 4 heads x 128), so it is stored in bf16 (the other models keep fp32).

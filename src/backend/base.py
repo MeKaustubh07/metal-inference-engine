@@ -29,8 +29,10 @@ class Backend(Protocol):
     def rope(self, x: torch.Tensor, positions: torch.Tensor, theta: float) -> torch.Tensor:
         """x [T, H, d] rotated by absolute positions [T]."""
 
-    def attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, causal: bool = True) -> torch.Tensor:
-        """q [T, Hq, d], k/v [S, Hkv, d] -> [T, Hq, d]; query i sits at position S - T + i."""
+    def attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, causal: bool = True,
+                  window: int | None = None) -> torch.Tensor:
+        """q [T, Hq, d], k/v [S, Hkv, d] -> [T, Hq, d]; query i sits at position S - T + i. k/v may be any suffix of
+        the history ending at the last query; with a window W each query sees its last W keys (ops.attention)."""
 
     def silu_mul(self, gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
         """silu(gate) * up"""
@@ -55,8 +57,10 @@ class Backend(Protocol):
                               dims) -> torch.Tensor:
         """The same for B sequences at once (row i belongs to states[i]) -> [B, H*dv]."""
 
-    def paged_attention(self, q, k_pool, v_pool, tables, lens, block_size) -> torch.Tensor:
-        """Batched decode attention reading a paged KV pool in place: q [B, Hq, d] -> [B, Hq, d]."""
+    def paged_attention(self, q, k_pool, v_pool, tables, lens, block_size, window=None) -> torch.Tensor:
+        """Batched decode attention reading a paged KV pool in place: q [B, Hq, d] -> [B, Hq, d]. The pool is fp32 or
+        bf16. With a window W, sequence i reads only positions lens[i] - W .. lens[i] - 1, so blocks below that may
+        be freed or reused."""
 
     # ---- protocol v3, added for Cohere2 (Tiny Aya)
     def layer_norm(self, x: torch.Tensor, w: torch.Tensor, eps: float) -> torch.Tensor:

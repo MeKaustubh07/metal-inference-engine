@@ -126,11 +126,13 @@ class OutputFilter:
         return [("content", text)] if text else []
 
 
-def create_app(engine, max_batch: int = 8, max_waiting: int = 64, kv_blocks: int = 1024, max_model_len: int = 4096,
-               drain_timeout: float = 2.0, prefill_chunk: int = 512, batch_wait_ms: float = 5.0,
-               lock_weights: bool = False) -> FastAPI:
+def create_app(engine, max_batch: int = 8, max_waiting: int = 64, kv_blocks: int = 1024,
+               max_model_len: int | None = None, drain_timeout: float = 2.0, prefill_chunk: int = 512,
+               batch_wait_ms: float = 5.0, lock_weights: bool = False) -> FastAPI:
     cap = getattr(engine, "max_model_len", None)
-    if cap and max_model_len > cap:                     # a model's own limit wins (Tiny Aya: its sliding window)
+    if max_model_len is None:                           # default: the model's own limit (else 4096)
+        max_model_len = cap or 4096
+    elif cap and max_model_len > cap:                   # a model's own limit wins (registry and model)
         log.info(f"max_model_len {max_model_len} -> {cap}, {engine.name}'s limit")
         max_model_len = cap
     metrics = Metrics()

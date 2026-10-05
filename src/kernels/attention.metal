@@ -82,6 +82,8 @@ kernel void attention_decode(device float* out        [[buffer(0)]],
 // place from the paged pool through each sequence's block table, so no per-sequence gather into a contiguous copy.
 // q/out: [B, Hq, d]; k, v: one layer of the pool [blocks, bs, Hkv, d]; tables: [B, max_nb]; lens: [B];
 // scores (scratch): [B, Hq, max_len]. Same three steps as attention_decode.
+// window W (0: none): the query at position S - 1 sees keys S - W .. S - 1 only, so table entries for blocks before
+// that are never read (they may be freed or reused). S > W is tested first: S - W would wrap around as a uint.
 template <typename T>
 kernel void paged_attention_decode(device float* out        [[buffer(0)]],
                                    device const float* q    [[buffer(1)]],
@@ -96,6 +98,7 @@ kernel void paged_attention_decode(device float* out        [[buffer(0)]],
                                    constant uint& n_kv      [[buffer(10)]],
                                    constant uint& group     [[buffer(11)]],
                                    constant uint& d         [[buffer(12)]],
+                                   constant uint& window    [[buffer(13)]],
                                    uint2 tgp  [[threadgroup_position_in_grid]],
                                    uint2 tpos [[thread_position_in_threadgroup]],
                                    uint2 tgs  [[threads_per_threadgroup]],
@@ -104,6 +107,7 @@ kernel void paged_attention_decode(device float* out        [[buffer(0)]],
     threadgroup float red[32];
     uint h = tgp.x, bi = tgp.y, tid = tpos.x, ntg = tgs.x, Hq = n_kv * group;
     uint kvh = h / group, S = uint(lens[bi]);
+    uint s0 = (window != 0 && S > window) ? S - window : 0;           // the first key in the window
     device const int* table = tables + (ulong)bi * max_nb;
     device const float* qh = q + ((ulong)bi * Hq + h) * d;
     device float* sc = scores + ((ulong)bi * Hq + h) * max_len;
@@ -111,7 +115,7 @@ kernel void paged_attention_decode(device float* out        [[buffer(0)]],
     #define KV_ROW(s) (((ulong)table[(s) / bs] * bs + (s) % bs) * n_kv + kvh) * d     // position -> pool offset
 
     float m = -INFINITY;
-    for (uint s = tid; s < S; s += ntg) {
+    for (uint s = s0 + tid; s < S; s += ntg) {
         device const vec<T, 4>* ks = (device const vec<T, 4>*)(k + KV_ROW(s));
         device const float4* q4 = (device const float4*)qh;
         float dotv = 0.0f;
@@ -129,7 +133,7 @@ kernel void paged_attention_decode(device float* out        [[buffer(0)]],
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     float sum = 0.0f;
-    for (uint s = tid; s < S; s += ntg) { float e = precise::exp(sc[s] - m); sc[s] = e; sum += e; }
+    for (uint s = s0 + tid; s < S; s += ntg) { float e = precise::exp(sc[s] - m); sc[s] = e; sum += e; }
     sum = simd_sum(sum);
     if (lane == 0) red[sg] = sum;
     threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device);
@@ -142,7 +146,7 @@ kernel void paged_attention_decode(device float* out        [[buffer(0)]],
     uint j = tid % d, p = tid / d;
     if (p < ngroups) {
         float acc = 0.0f;
-        for (uint s = p; s < S; s += ngroups) acc += sc[s] * float(v[KV_ROW(s) + j]);
+        for (uint s = s0 + p; s < S; s += ngroups) acc += sc[s] * float(v[KV_ROW(s) + j]);
         part[p * d + j] = acc;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -162,8 +166,8 @@ kernel void paged_attention_decode(device float* out        [[buffer(0)]],
 #define PAGED_ATTENTION_DECODE(T, NAME) \
     template [[host_name(NAME)]] kernel void paged_attention_decode<T>(device float*, device const float*, \
         device const T*, device const T*, device float*, device const int*, device const int*, constant uint&, \
-        constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, uint2, uint2, uint2, uint, \
-        uint);
+        constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, constant uint&, uint2, uint2, \
+        uint2, uint, uint);
 ATTENTION_DECODE(float, "attention_decode")
 ATTENTION_DECODE(bfloat, "attention_decode_bf16")
 PAGED_ATTENTION_DECODE(float, "paged_attention_decode")

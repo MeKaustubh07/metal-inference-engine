@@ -34,8 +34,8 @@ class TorchBackend:
     def rope(self, x, positions, theta):
         return ops.rope(x, positions, theta)
 
-    def attention(self, q, k, v, causal=True):
-        return ops.attention(q, k, v, causal)
+    def attention(self, q, k, v, causal=True, window=None):
+        return ops.attention(q, k, v, causal, window)
 
     def silu_mul(self, gate, up):
         return ops.silu_mul(gate, up)
@@ -72,15 +72,19 @@ class TorchBackend:
         o, state.S[slot] = self.gated_delta(q, k, v, beta, g, state.S[slot])
         return self.rms_norm_gated(o.reshape(H, dv), z.reshape(H, dv), norm_w, eps).reshape(1, H * dv)
 
-    def paged_attention(self, q, k_pool, v_pool, tables, lens, block_size):
+    def paged_attention(self, q, k_pool, v_pool, tables, lens, block_size, window=None):
         """Batched decode attention over paged KV: q [B, Hq, d]; k_pool/v_pool one layer [blocks, bs, Hkv, d];
-        tables [B, max_nb], lens [B]. Reference: gather each sequence's positions, then ordinary attention."""
+        tables [B, max_nb], lens [B]. Reference: gather each sequence's positions, then ordinary attention. With a
+        window, only from position lens[i] - window on: table entries below its block are never read."""
         outs = []
         for i in range(q.shape[0]):
             n = int(lens[i]); nb = -(-n // block_size)
-            K = k_pool[tables[i, :nb].long()].flatten(0, 1)[:n]
-            V = v_pool[tables[i, :nb].long()].flatten(0, 1)[:n]
-            outs.append(self.attention(q[i:i + 1], K, V, causal=True))
+            s0 = max(0, n - window) if window else 0
+            b0 = s0 // block_size
+            rows = slice(s0 - b0 * block_size, n - b0 * block_size)
+            K = k_pool[tables[i, b0:nb].long()].flatten(0, 1)[rows]
+            V = v_pool[tables[i, b0:nb].long()].flatten(0, 1)[rows]
+            outs.append(self.attention(q[i:i + 1], K, V, causal=True, window=window))
         return torch.cat(outs)
 
     def deltanet_decode_batch(self, qkv, z, b, a, states, slot, conv_w, A_log, dt_bias, norm_w, eps, dims):

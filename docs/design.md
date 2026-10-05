@@ -48,7 +48,7 @@ against Hugging Face `transformers`.
 | tokenizer | `src/tokenizer.py` | byte-level BPE from `tokenizer.json` (GPT-2 byte alphabet, merge ranks, special tokens first, NFC if the file asks, every regex Split, BOS from the post-processor) |
 | chat template | `src/chat.py` | Qwen3.5 ChatML incl. thinking-mode rules; or the model's own Jinja template, rendered as transformers renders it (Tiny Aya) |
 | model | `src/models/qwen3_5.py` | hybrid layers, fused projections, partial RoPE, output gate, DeltaNet prefill and decode |
-| model | `src/models/cohere2.py` | Tiny Aya: all-attention layers, LayerNorm feeding attention and MLP in parallel, interleaved RoPE (by reordering q/k rows at load) on sliding layers only, logit scale; refuses positions past the sliding window until it is implemented |
+| model | `src/models/cohere2.py` | Tiny Aya: all-attention layers, LayerNorm feeding attention and MLP in parallel, interleaved RoPE (by reordering q/k rows at load) on sliding layers only, a 4096-token sliding window on 27 of 36 layers (they read only their window's suffix of the KV cache), logit scale, bf16 KV |
 | state | `src/state.py` | contiguous and paged KV caches, block allocator, `HybridState` |
 | kernels | `src/kernels/*.metal` | matvec (bf16, INT8, INT4, batched), RMSNorm, LayerNorm (Tiny Aya), RoPE, decode attention, DeltaNet step, SwiGLU |
 | quantization | `src/quant.py` | block-32 INT8 / asymmetric INT4, calibrated mixed-precision policy, `.qt` format |
@@ -205,7 +205,7 @@ the same route above 32 rows, so a prompt packed with others keeps fp32 activati
 - **Invariants**: cached == uncached; paged == contiguous; batched == sequential (greedy tokens identical, logits
   within 6e-5 in fp32 on the CPU; bit-identical in bf16 on Metal); preempted == uninterrupted; fused kernels ==
   reference ops; batched kernels == per-row kernels.
-- `scripts/run_tests.py` runs all 16 suites, reports any that skipped, and exits nonzero on any failure.
+- `scripts/run_tests.py` runs all 17 suites, reports any that skipped, and exits nonzero on any failure.
 
 ## 8. Operations
 

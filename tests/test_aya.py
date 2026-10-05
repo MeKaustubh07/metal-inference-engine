@@ -258,6 +258,9 @@ def chat(*msgs, **extra):
                                                       "max_tokens": 4, **extra}))
 
 check("create_app(max_model_len=8192) gives the scheduler the model's own cap, 4096", sched.max_model_len == 4096)
+check("create_app() without max_model_len uses the model's own cap; an explicit smaller one still lowers it",
+      app_module.create_app(eng).state.scheduler.max_model_len == spec["max_model_len"]
+      and app_module.create_app(eng, max_model_len=1000).state.scheduler.max_model_len == 1000)
 code, _ = asyncio.run(post("/v1/completions", {"prompt": "Hi", "max_tokens": 4}))
 check(f"/v1/completions: raw text gets one BOS ({sched.submitted[-1]})",
       code == 429 and sched.submitted[-1] == tok.encode("Hi", add_bos=True) and sched.submitted[-1].count(2) == 1)

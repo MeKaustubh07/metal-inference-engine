@@ -13,8 +13,10 @@ Interleaved RoPE without a new kernel: within each head, the rows of W_q and W_k
 numbers 2i and 2i+1 land at i and i + d/2. The half-split rotation then turns exactly the pairs HF turns, at the
 same frequencies, and q.k does not change when q and k get the same reordering (cached keys stay reordered).
 
-The sliding window itself is not implemented yet. Below sliding_window positions it excludes no key, so a forward
-whose positions stay below it is exact; anything longer is refused rather than silently wrong.
+Sliding window (M5): on the sliding layers the query at position p sees keys max(0, p - W + 1) .. p (transformers:
+`kv_idx > q_idx - sliding_window`). They read only that suffix of their KV cache and pass the window to the backend,
+which masks the band; the full layers read everything. RoPE positions stay absolute. The model refuses sequences past
+config.max_position_embeddings (8192), before any state moves.
 
 stream=True (the fp32 CPU reference of the real model, which would need 13.4 GB if every widened weight were kept):
 each weight is widened when used and dropped after, the embedding rows are read from the stored table, and the tied
@@ -102,13 +104,16 @@ class Cohere2Model:
 
     @property
     def max_positions(self) -> int:
-        """The longest sequence this implementation computes exactly (the sliding window, until it is implemented)."""
-        return self.config.sliding_window
+        """The longest sequence the model supports: its config's max_position_embeddings."""
+        return self.config.max_position_embeddings
 
-    def _check_window(self, end: int) -> None:
-        if end > self.config.sliding_window:
-            raise ValueError(f"{end} positions: past the {self.config.sliding_window}-token sliding window, which "
-                             "is not implemented yet")
+    def _check_length(self, end: int) -> None:
+        if end > self.max_positions:
+            raise ValueError(f"{end} positions: past the model's {self.max_positions}")
+
+    def _window(self, i: int) -> int | None:
+        """Layer i's sliding window, or None for a full-attention layer."""
+        return self.config.sliding_window if self.config.is_sliding(i) else None
 
     # ---------------------------------------------------------------- layers
     def embed(self, ids: torch.Tensor) -> torch.Tensor:
@@ -143,13 +148,14 @@ class Cohere2Model:
     def attention(self, i: int, x, positions, segs: list[Segment], residual):
         """x: [N, hidden], the tokens of every segment. Projections run once over all N; attention per segment."""
         q, k, v = self._project(i, x, positions)
-        outs = []
+        W, outs = self._window(i), []
         for sg in segs:                                            # each sequence attends to its own history only
             qs, ks, vs = q[sg.lo:sg.hi], k[sg.lo:sg.hi], v[sg.lo:sg.hi]
             if sg.state is not None:
                 sg.state.kv.write(i, sg.start, ks, vs)
-                ks, vs = sg.state.kv.read(i, sg.start + sg.hi - sg.lo)
-            outs.append(self.b.attention(qs.contiguous(), ks, vs, causal=True))          # scale 1/sqrt(head_dim)
+                lo = max(0, sg.start - W + 1) if W else 0         # the first key the chunk's first query sees
+                ks, vs = sg.state.kv.read(i, sg.start + sg.hi - sg.lo, lo)
+            outs.append(self.b.attention(qs.contiguous(), ks, vs, causal=True, window=W))   # scale 1/sqrt(d)
         o = (torch.cat(outs) if len(outs) > 1 else outs[0]).reshape(x.shape[0], -1)
         return self.b.linear(o, self._w(f"layers.{i}.self_attn.o_proj.weight"), residual=residual)
 
@@ -167,7 +173,7 @@ class Cohere2Model:
     def _layers(self, ids, positions, segs: list[Segment], capture: dict | None = None):
         """Embedding and all layers over the packed tokens -> hidden states [N, hidden] (before the final norm)."""
         for sg in segs:
-            self._check_window(sg.start + sg.hi - sg.lo)
+            self._check_length(sg.start + sg.hi - sg.lo)
         reserve_all(segs)                            # fail before any layer mutates state (atomic forward)
         h = self.embed(ids)
         if capture is not None:
@@ -227,7 +233,7 @@ class Cohere2Model:
         c, b = self.config, self.b
         B = len(tokens)
         for st in states:
-            self._check_window(st.length + 1)
+            self._check_length(st.length + 1)
         for st in states:
             st.reserve(st.length + 1)
         starts = [st.length for st in states]
@@ -241,15 +247,17 @@ class Cohere2Model:
         for i in range(c.num_hidden_layers):
             x = b.layer_norm(h, self._vec(f"layers.{i}.input_layernorm.weight"), c.layer_norm_eps)
             q, k, v = self._project(i, x, positions)
+            W = self._window(i)
             if paged:
                 kv_pool.write_batch(i, blocks, offsets, k, v)
-                o = b.paged_attention(q.contiguous(), kv_pool.k[i], kv_pool.v[i], tables, lens, kv_pool.block_size)
+                o = b.paged_attention(q.contiguous(), kv_pool.k[i], kv_pool.v[i], tables, lens, kv_pool.block_size,
+                                      window=W)
             else:
                 outs = []
                 for j, st in enumerate(states):
                     st.kv.write(i, starts[j], k[j:j + 1], v[j:j + 1])
-                    K, V = st.kv.read(i, starts[j] + 1)
-                    outs.append(b.attention(q[j:j + 1].contiguous(), K, V, causal=True))
+                    K, V = st.kv.read(i, starts[j] + 1, max(0, starts[j] + 1 - W) if W else 0)
+                    outs.append(b.attention(q[j:j + 1].contiguous(), K, V, causal=True, window=W))
                 o = torch.cat(outs)
             a = b.linear(o.reshape(B, -1), self._w(f"layers.{i}.self_attn.o_proj.weight"), residual=h)
             h = self.mlp(i, x, residual=a)

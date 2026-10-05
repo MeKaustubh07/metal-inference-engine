@@ -24,9 +24,9 @@ class ContiguousKVCache:
         self.k[layer, start:end] = k.to(self.k.dtype)
         self.v[layer, start:end] = v.to(self.v.dtype)
 
-    def read(self, layer: int, end: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """All keys/values for positions 0 .. end-1 (views, no copy)."""
-        return self.k[layer, :end], self.v[layer, :end]
+    def read(self, layer: int, end: int, lo: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
+        """Keys/values for positions lo .. end-1 (views, no copy). lo > 0: a sliding-window layer's suffix."""
+        return self.k[layer, lo:end], self.v[layer, lo:end]
 
     def advance(self, n: int) -> None:
         self.length += n
@@ -139,12 +139,14 @@ class PagedSequence:
         self.pool.k[layer, blocks, offsets] = k.to(self.pool.k.dtype)
         self.pool.v[layer, blocks, offsets] = v.to(self.pool.v.dtype)
 
-    def read(self, layer: int, end: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """Gather positions 0 .. end-1 from their blocks into contiguous [end, kv_heads, head_dim]."""
-        nb = -(-end // self.pool.block_size)                  # ceil(end / block_size)
-        table = torch.tensor(self.block_table[:nb], device=self.pool.k.device)
-        k = self.pool.k[layer, table].flatten(0, 1)[:end]     # [nb*bs, H, d] -> first `end` rows
-        v = self.pool.v[layer, table].flatten(0, 1)[:end]
+    def read(self, layer: int, end: int, lo: int = 0) -> tuple[torch.Tensor, torch.Tensor]:
+        """Gather positions lo .. end-1 from their blocks into contiguous [end - lo, kv_heads, head_dim]. Only the
+        blocks holding them are touched (lo > 0: a sliding-window layer, whose older blocks may be gone)."""
+        bs = self.pool.block_size
+        b0, nb = lo // bs, -(-end // bs)                      # first block read, ceil(end / block_size)
+        table = torch.tensor(self.block_table[b0:nb], device=self.pool.k.device)
+        k = self.pool.k[layer, table].flatten(0, 1)[lo - b0 * bs:end - b0 * bs]   # [blocks*bs, H, d] -> the rows
+        v = self.pool.v[layer, table].flatten(0, 1)[lo - b0 * bs:end - b0 * bs]
         return k, v
 
     def advance(self, n: int) -> None:

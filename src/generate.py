@@ -5,11 +5,20 @@ import torch
 
 from sampler import SamplingParams, sample
 
+PREFILL_CHUNK = 512        # prompt tokens per forward: bounds the [heads, T, S] attention scores (decision.py too)
+
 
 def _next_logits(model, tokenizer, ids_new: list[int], state) -> torch.Tensor:
     """Run the new tokens through the model; return last-position logits over real vocab ids only."""
     logits = model.forward(torch.tensor(ids_new), state=state, last_only=True)[0]
     return logits[: tokenizer.vocab_size()].cpu()          # ids past the tokenizer vocab are padding rows
+
+
+def _prefill(model, tokenizer, ids: list[int], state) -> torch.Tensor:
+    """The prompt in PREFILL_CHUNK pieces (an 8K prompt in one pass would need a 4 GiB score tensor per layer)."""
+    for i in range(0, len(ids), PREFILL_CHUNK):
+        logits = _next_logits(model, tokenizer, ids[i:i + PREFILL_CHUNK], state)
+    return logits
 
 
 def generate_greedy(model, tokenizer, prompt: str, max_new_tokens: int, eos_ids: set[int],
@@ -19,7 +28,7 @@ def generate_greedy(model, tokenizer, prompt: str, max_new_tokens: int, eos_ids:
     new: list[int] = []
     if use_cache:
         state = model.new_state(len(ids) + max_new_tokens)
-        logits = _next_logits(model, tokenizer, ids, state)            # prefill: whole prompt at once
+        logits = _prefill(model, tokenizer, ids, state)                # prefill: the prompt, in chunks
     for _ in range(max_new_tokens):
         if not use_cache:                                              # recompute the whole sequence every step
             logits = _next_logits(model, tokenizer, ids + new, None)
@@ -40,7 +49,7 @@ def generate_stream(model, tokenizer, prompt_ids: list[int], params: SamplingPar
     """
     gen = torch.Generator().manual_seed(params.seed) if params.seed is not None else None
     state = model.new_state(len(prompt_ids) + max_new_tokens)
-    logits = _next_logits(model, tokenizer, list(prompt_ids), state)
+    logits = _prefill(model, tokenizer, list(prompt_ids), state)
     history = list(prompt_ids)
     new: list[int] = []
     emitted = ""

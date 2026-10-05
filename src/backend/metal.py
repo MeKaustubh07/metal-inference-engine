@@ -7,6 +7,7 @@ from pathlib import Path
 
 import torch
 
+import ops
 from backend.torch_ref import TorchBackend
 from quant import QuantTensor, load_policy, quantize, scheme_for
 
@@ -37,6 +38,7 @@ class MetalBackend(TorchBackend):
         self._no_bias = torch.zeros(1, dtype=torch.bfloat16, device=self.device)
         self._no_res = torch.zeros(1, device=self.device)
         self._seq0 = torch.zeros(1, dtype=torch.int32, device=self.device)   # a standalone state = sequence 0
+        self._inv_freq: dict[tuple[float, int], torch.Tensor] = {}          # RoPE frequencies per (theta, d)
 
     def prepare(self, w, name=None):
         if isinstance(w, QuantTensor):
@@ -177,7 +179,10 @@ class MetalBackend(TorchBackend):
         T, H, d = x.shape
         out = torch.empty_like(x)
         n = T * H * (d // 2)
-        self.lib.rope(out, x, positions.to(device=self.device, dtype=torch.int32), float(theta), H, d, n,
+        key = (float(theta), d)
+        if key not in self._inv_freq:                       # computed once, as ops.rope and transformers compute it
+            self._inv_freq[key] = ops.rope_inv_freq(theta, d).to(self.device)
+        self.lib.rope(out, x, positions.to(device=self.device, dtype=torch.int32), self._inv_freq[key], H, d, n,
                       threads=n, group_size=min(TG, n))
         return out
 
@@ -189,9 +194,11 @@ class MetalBackend(TorchBackend):
             raise TypeError(f"{name}: keys and values must both be float32 or bfloat16, not {k.dtype} / {v.dtype}")
         return getattr(self.lib, name if k.dtype == torch.float32 else name + "_bf16")
 
-    def attention(self, q, k, v, causal=True):
+    def attention(self, q, k, v, causal=True, window=None):
         if q.shape[0] != 1:
-            return super().attention(q, k, v, causal)       # prefill: many queries, masked
+            return super().attention(q, k, v, causal, window)   # prefill: many queries, masked
+        if window and k.shape[0] > window:                  # one query, the newest: it sees the last `window` keys
+            k, v = k[-window:], v[-window:]
         _, Hq, d = q.shape
         S, Hkv, _ = k.shape
         if k.dtype != v.dtype or k.dtype not in KV_DTYPES:  # e.g. fp16: widened, as before
@@ -202,9 +209,9 @@ class MetalBackend(TorchBackend):
                                                   scores, S, Hkv, Hq // Hkv, d, threads=Hq * TG, group_size=TG)
         return out
 
-    def paged_attention(self, q, k_pool, v_pool, tables, lens, block_size):
+    def paged_attention(self, q, k_pool, v_pool, tables, lens, block_size, window=None):
         """One dispatch for the whole batch: every (head, sequence) reads its keys/values in place via its block
-        table (no per-sequence gather)."""
+        table (no per-sequence gather). With a window, only the last `window` positions of each sequence."""
         B, Hq, d = q.shape
         Hkv = k_pool.shape[2]
         max_len = tables.shape[1] * block_size
@@ -212,7 +219,7 @@ class MetalBackend(TorchBackend):
         scores = torch.empty(B, Hq, max_len, device=self.device)
         self._kv_kernel("paged_attention_decode", k_pool, v_pool)(
             out, q.float().contiguous(), k_pool, v_pool, scores, tables, lens, tables.shape[1], max_len, block_size,
-            Hkv, Hq // Hkv, d, threads=(Hq * TG, B), group_size=(TG, 1))
+            Hkv, Hq // Hkv, d, window or 0, threads=(Hq * TG, B), group_size=(TG, 1))
         return out
 
     def silu_mul(self, gate, up):

@@ -24,6 +24,14 @@ def layer_norm(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tenso
     return weight.float() * (centered * torch.rsqrt(variance + eps))
 
 
+def rope_inv_freq(theta: float, d: int) -> torch.Tensor:
+    """One rotation speed per pair, fast for the first pairs and very slow for the last: 1 / theta^(i / (d/2)), in
+    fp32 on the CPU as transformers computes it once at load. Computed anywhere else (another device's pow), the last
+    bit can differ, and the angle position * freq multiplies that error by the position."""
+    half = d // 2
+    return 1.0 / (theta ** (torch.arange(0, half, dtype=torch.float32) / half))
+
+
 def rope(x: torch.Tensor, positions: torch.Tensor, theta: float) -> torch.Tensor:
     """Rotary position embedding: rotate pairs of numbers by a position-dependent angle.
 
@@ -35,8 +43,7 @@ def rope(x: torch.Tensor, positions: torch.Tensor, theta: float) -> torch.Tensor
     """
     d = x.shape[-1]
     half = d // 2
-    # One rotation speed per pair: fast for the first pairs, very slow for the last.
-    freqs = 1.0 / (theta ** (torch.arange(0, half, dtype=torch.float32, device=x.device) / half))  # [d/2]
+    freqs = rope_inv_freq(theta, d).to(x.device)                                               # [d/2]
     angles = positions.to(x.device).float()[:, None] * freqs[None, :]                          # [T, d/2]
     cos = torch.cos(angles)[:, None, :]                                           # [T, 1, d/2]
     sin = torch.sin(angles)[:, None, :]                                           # broadcast over heads
@@ -55,29 +62,45 @@ def softmax(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
     return e / e.sum(dim=dim, keepdim=True)
 
 
-def attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, causal: bool = True) -> torch.Tensor:
+def attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, causal: bool = True,
+              window: int | None = None) -> torch.Tensor:
     """Grouped-query attention.
 
     q:    [T, Hq, d]   queries for the T new tokens (already rotated by RoPE)
-    k, v: [S, Hkv, d]  keys/values for all S tokens seen so far (S == T until the KV cache exists)
+    k, v: [S, Hkv, d]  keys/values of the tokens seen so far, or of any suffix of them that ends at the last query
+                       (S == T until the KV cache exists); query i sits at position S - T + i of k/v
+    window:            a sliding window W (causal only): each query sees itself and the W - 1 keys before it, as in
+                       transformers (q - W < key <= q). None: every earlier key
     returns [T, Hq, d]
     """
     T, Hq, d = q.shape
+    if window is not None:
+        if window < 1:
+            raise ValueError(f"window must be at least 1, not {window}")
+        if k.shape[0] > T + window - 1:                 # older than the first query's window: no query sees them
+            k, v = k[k.shape[0] - T - window + 1:], v[v.shape[0] - T - window + 1:]
     S, Hkv, _ = k.shape
     group = Hq // Hkv                                   # 8 // 2 = 4 query heads share each key/value head
     k = k.float().repeat_interleave(group, dim=1)       # [S, Hq, d]: KV head 0 serves query heads 0-3, head 1 serves 4-7
     v = v.float().repeat_interleave(group, dim=1)
 
     qh, kh, vh = q.float().transpose(0, 1), k.transpose(0, 1), v.transpose(0, 1)   # heads first: [H, tokens, d]
-    scores = (qh @ kh.transpose(1, 2)) / math.sqrt(d)   # [Hq, T, S]: every query dotted with every key
+    # [Hq, T, S]: every query dotted with every key. The largest tensor here (16 x 512 x 8192 fp32 = 256 MiB for one
+    # 512-token chunk at position 8K), so it is scaled, masked and softmaxed in place: one buffer instead of three,
+    # the same operations in the same order as softmax() above
+    scores = qh @ kh.transpose(1, 2)
+    scores.div_(math.sqrt(d))
 
     if causal:
         # query i sits at absolute position S - T + i and may only see keys at positions <= that
         future = torch.ones(T, S, dtype=torch.bool, device=q.device).triu(diagonal=S - T + 1)
-        scores = scores.masked_fill(future, float("-inf"))   # exp(-inf) = 0 -> zero weight
+        if window is not None:                           # ... and only keys at positions > its own - window
+            future |= torch.ones(T, S, dtype=torch.bool, device=q.device).tril(diagonal=S - T - window)
+        scores.masked_fill_(future, float("-inf"))      # exp(-inf) = 0 -> zero weight
 
-    weights = softmax(scores, dim=-1)                   # [Hq, T, S]: each row sums to 1
-    out = weights @ vh                                  # [Hq, T, d]: weighted mix of values
+    scores.sub_(scores.max(dim=-1, keepdim=True).values).exp_()   # softmax: subtract the max (exp overflows), exp,
+    scores.div_(scores.sum(dim=-1, keepdim=True))                 # then divide by the sum: each row sums to 1
+    out = scores @ vh                                   # [Hq, T, d]: weighted mix of values
     return out.transpose(0, 1)                          # back to [T, Hq, d]
 
 

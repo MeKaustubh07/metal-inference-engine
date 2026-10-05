@@ -250,6 +250,17 @@ The full model in fp32 is 13.4 GB; one layer is 0.31 GB. Both sides run one laye
 | tiny random model, CPU | bf16 KV: half the bytes, logits within 5.9e-3 of fp32 KV, same argmax as HF at 23/23 positions (KL 6.6e-6); paged == contiguous exactly, batched == alone, forks exact. Chunked vs one pass is not exact in bf16: 18 of 11,776 cached values land one bf16 step apart, because fp32 rounding differences (other GEMM shapes) push values across a bf16 rounding boundary (1.1e-4 on the logits) |
 | real model vs the M3 key (169 positions, up to ~386 tokens) | INT8: KL 0.0006 with fp32 KV, 0.0006 with bf16 (+0.0000), 0 flips, greedy 90/90 in both. INT4: 0.1050 vs 0.1036 (-0.0014; +0.0001 at served positions), 9 flips and 44/90 in both. Decode speed unchanged (INT8 ~21, INT4 ~30 tok/s). Long contexts (4K-8K) are measured in part B |
 
+## Porting Tiny Aya, M5 part B1-B5: the sliding window (2026-10-05)
+
+| step | result |
+|---|---|
+| semantics | transformers' `sliding_window_overlay`: a query at position q sees key k iff q - W < k <= q (W keys, itself included); Tiny Aya W = 4096 on 27 of 36 layers |
+| reference attention | `ops.attention(window=W)`: drops keys no query of the chunk sees, ORs a band mask; == a float64 oracle written from absolute positions on all 18,320 small cases (W 1-10, chunks 1-8, starts 0-24, every valid key suffix), worst 3.8e-6; W - 1 and W + 1 are caught for all 19 window sizes; no window, or W >= every position, is bit-identical to before |
+| Metal decode | paged kernel: loops start at s0 = (S > W ? S - W : 0); single-sequence decode: a view of the last W keys. fp32 and bf16, 16/4 x 128, at W - 1, W, W + 1, 2W + 3 and 4095-8192: within 4.8e-7; paged with every block before the window NaN: finite, within 6.6e-7 |
+| RoPE drift (found by the M5 design review) | the kernel computed its own pow() for each pair's frequency; one ulp off, and the angle position x frequency grew the error with the position: Tiny Aya 2.0e-5 relative at 386, 2.0e-4 at 4095, 4.1e-4 at 8191 (Qwen3.5 3.6e-4 at 8191). It now reads transformers' fp32 table (computed once on the CPU): ~1e-7 at every position, 8e-8 at 31999. Qwen3.5-2B's quality numbers are unchanged to 4 decimals (KL 0.0004 / 0.0007 / 0.0454) |
+| model | sliding layers read only their window's suffix of the KV cache (`read(layer, end, lo)`), full layers everything; the cap is config.max_position_embeddings (8192), refused atomically before any state moves. Tiny random Cohere2 with W = 8 over 40 positions vs HF: every layer 2.2e-6; chunked prefill (6 schedules incl. chunks ending at the window, longer than it, token by token) on contiguous and paged (blocks of 4 and 3) 5.2e-6; greedy 20 tokens to position 26 identical; batched, packed and forks exact; the sliding layers' blocks before the window NaN-poisoned: output unchanged (0.0) |
+| 8K memory | attention scores scaled, masked and softmaxed in place (one [16, T, S] buffer instead of three; bit-identical on the CPU); generate.py prefills in 512-token chunks; the server's cap defaults to the model's own |
+
 ## Review workflows run
 
 | week | agents | findings → confirmed | notable |

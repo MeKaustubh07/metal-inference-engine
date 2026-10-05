@@ -2,7 +2,7 @@
 
 usage: serve.py [--model qwen3.5-2b] [--backend metal-int4] [--weights models/qwen3.5-2b/model.int4.qt]
                 [--host 127.0.0.1] [--port 8000] [--max-batch 8] [--max-waiting 64] [--kv-blocks 1024]
-                [--max-model-len 4096] [--drain-timeout 25] [--prefill-chunk 512] [--batch-wait-ms 5]
+                [--max-model-len N] [--drain-timeout 25] [--prefill-chunk 512] [--batch-wait-ms 5]
                 [--no-lock-weights]
 
 With a quantized backend and no --weights, models/<model>/model.<int8|int4>.qt is used when it exists (quantizing
@@ -34,7 +34,8 @@ def main() -> None:
     ap.add_argument("--max-batch", type=int, default=8)
     ap.add_argument("--max-waiting", type=int, default=64)
     ap.add_argument("--kv-blocks", type=int, default=1024, help="16-token blocks; 24 KiB/token on Qwen3.5-2B")
-    ap.add_argument("--max-model-len", type=int, default=4096)
+    ap.add_argument("--max-model-len", type=int, default=None,
+                    help="prompt + output tokens per request (default: the model's limit, else 4096; only lowers it)")
     ap.add_argument("--drain-timeout", type=float, default=25.0)
     ap.add_argument("--prefill-chunk", type=int, default=512,
                     help="prompt tokens per packed prefill pass; longer prompts are split across engine steps")
