@@ -2,7 +2,8 @@
 
 usage: bench.py [--model qwen3.5-0.8b] [--backend cpu|mps|metal|metal-int8|metal-int4] [--weights FILE.qt]
                 [--prompt-lens 16,256,1024] [--new 32] [--no-cache] [--batch 1,2,4,8] [--prefill-chunk N] [--paged]
-                [--kv-blocks N] [--kv-report] [--trace] [--out docs/bench/x.md]
+                [--kv-blocks N] [--kv-report] [--trace] [--decide CTX [--options N] [--option-tokens K]]
+                [--out docs/bench/x.md]
 
 --batch measures continuous-batching decode: B sequences advance together through model.decode_batch, and the
 aggregate rate is B tokens per step. --prefill-chunk N prefills each prompt N tokens at a time (TTFT is the whole
@@ -14,9 +15,15 @@ is the process's physical footprint (CPU and Metal alike, as Activity Monitor sh
 --trace (with --paged and one prompt length): ONE prefill in this fresh process, the footprint after every chunk: what
 one request adds to a fresh process. A long-running server also keeps what the allocator cached for earlier requests,
 which repeated runs in one process (no --trace) measure.
+--decide CTX (Metal): one /v1/decide-sized scoring call (decision.score_options) over a CTX-token context with N
+options of K tokens, next to a pool of --kv-blocks blocks (or the model's) as the server holds it: the GPU memory peak
+(the allocator's own), the seconds, Metal's aborted command buffers (macOS's log) and every score in full, so a change
+to decide can be checked bit for bit.
 """
 import argparse
+import os
 import resource
+import subprocess
 import sys
 import time
 
@@ -104,6 +111,40 @@ def kv_report(model, chunk: int = 512) -> list[str]:
     return lines
 
 
+def metal_aborts(since: str) -> int | None:
+    """Command buffers Metal aborted for this process since `since` (it logs each one; torch 2.14 reports none)."""
+    abort = "Execution of the command buffer was aborted"
+    r = subprocess.run(["/usr/bin/log", "show", "--start", since, "--style", "compact", "--predicate",
+                        f'processID == {os.getpid()} AND eventMessage CONTAINS "{abort}"'],
+                       capture_output=True, text=True, timeout=300)
+    return sum(abort in line for line in r.stdout.splitlines()) if r.returncode == 0 else None
+
+
+def decide_bench(eng, ctx_len: int, n_opts: int, opt_tokens: int, kv_blocks: int) -> str:
+    """One /v1/decide-sized scoring call beside the server's pool: the context's cache and its forks live outside it."""
+    from decision import score_options
+    model, tok, A = eng.model, eng.tokenizer, torch.accelerator
+    pool = model.new_paged_pool(kv_blocks, 16, max_seqs=8, max_chunk=512)
+    st = model.new_paged_state(pool)
+    model.forward_packed([(torch.tensor([0]), st)])          # warm-up, as Scheduler._warmup
+    st.free()
+    g = torch.Generator().manual_seed(0)                       # ordinary tokens, clear of the special ids
+    opts = [torch.randint(1000, 100000, (opt_tokens,), generator=g).tolist() for _ in range(n_opts)]
+    ctx = prompt_ids(tok, ctx_len)
+    torch.mps.synchronize()
+    A.reset_peak_memory_stats()
+    since, t0 = time.strftime("%Y-%m-%d %H:%M:%S"), time.perf_counter()
+    scores = score_options(model, ctx, opts, tok.vocab_size())
+    torch.mps.synchronize()
+    secs = time.perf_counter() - t0
+    peak = A.max_memory_reserved() + max(0, torch.mps.driver_allocated_memory() - A.memory_reserved())
+    rec = torch.mps.recommended_max_memory()
+    return (f"/v1/decide, {len(ctx)}-token context, {n_opts} options x {opt_tokens} tokens, pool of {kv_blocks} "
+            f"blocks: peak GPU memory {peak / 2**30:.2f} GiB ({peak / rec:.2f}x Metal's recommended {rec / 2**30:.2f}), "
+            f"{secs:.1f} s, Metal aborts {metal_aborts(since)}\n"
+            f"scores {[repr(s.logprob) for s in scores]}")
+
+
 def prompt_ids(tok: Tokenizer, n: int) -> list[int]:
     ids: list[int] = []
     while len(ids) < n:
@@ -189,6 +230,9 @@ def main() -> None:
     ap.add_argument("--kv-blocks", type=int, default=0, help="--paged: the pool's size, as serve.py --kv-blocks")
     ap.add_argument("--kv-report", action="store_true", help="KV bytes per sequence and sequences per budget")
     ap.add_argument("--trace", action="store_true", help="one paged prefill, the footprint after every chunk")
+    ap.add_argument("--decide", type=int, default=0, help="a /v1/decide scoring call over this many context tokens")
+    ap.add_argument("--options", type=int, default=16, help="--decide: options (the API allows 16)")
+    ap.add_argument("--option-tokens", type=int, default=64, help="--decide: tokens per option (the API allows 64)")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
     if a.new < 2:
@@ -199,6 +243,11 @@ def main() -> None:
     sync = torch.mps.synchronize if backend.device.type == "mps" else (lambda: None)
     if a.kv_report:
         print("\n".join(kv_report(model, a.prefill_chunk or 512)) + "\n")
+    if a.decide:
+        if backend.device.type != "mps":
+            ap.error("--decide measures GPU memory: use a Metal backend")
+        print(decide_bench(eng, a.decide, a.options, a.option_tokens, a.kv_blocks or eng.kv_blocks or 1024))
+        return
     if a.trace:                                             # one request's prefill, as a server sees it
         print(footprint_trace(model, tok, int(a.prompt_lens.split(",")[0]), a.prefill_chunk or 512, a.kv_blocks, sync))
         return
