@@ -4,8 +4,9 @@ Listing options inside a prompt ("A) ... B) ...") gives each one a different pos
 earlier ones, so the answer can depend on the order. Here every option is scored alone: the context is prefilled
 once, each option continues from its own copy of the context's state (the attention layers' K/V and, for the
 hybrid model, the DeltaNet recurrent state: a recurrence has no attention mask, so isolation means a copy), every
-option starts at the same position, and all options run in one packed forward pass. Shuffle the options and each
-one's score is unchanged (tests/test_decision.py).
+option starts at the same position, and the options of a group run in one packed forward pass. When the context is
+too big to copy within the memory budget, options run one at a time on the context's own state, rewound after
+each. Shuffle the options and each one's score is unchanged (tests/test_decision.py).
 
 An option is scored as a whole word: its tokens, then a token that cannot continue its last word or number (a
 space, punctuation, a newline, an end token). That is P(the answer starts with the option as a unit): "1" is not
@@ -108,9 +109,24 @@ def score_options_steps(model, context_ids: list[int], options: list[list[int]],
     order = sorted(range(len(options)), key=lambda i: options[i])
     canonical, scores = [options[i] for i in order], []
     mask = boundary.to(model.b.device) if boundary is not None else None
+    # one option at a time (a context too big to copy within the budget, e.g. Tiny Aya at its cap: 288 MiB at 4K,
+    # 576 at 8K): score it on the context's own state, then rewind that, instead of copying it. An option only writes
+    # K/V at positions n_ctx.. and reads up to its own end, so the rows it leaves behind are never read by the next;
+    # the recurrent state (Qwen3.5's DeltaNet) is updated in place, so it is put back from a copy taken once
+    n_ctx = ctx.length
+    saved = (ctx.S.clone(), ctx.conv_tail.clone()) if group == 1 and ctx.S.numel() else None
     for g in range(0, len(canonical), group):
         opts = canonical[g:g + group]
-        h = model.packed_hidden([(torch.tensor(o), ctx.fork()) for o in opts])
+        if group > 1:
+            h = model.packed_hidden([(torch.tensor(o), ctx.fork()) for o in opts])
+        else:
+            try:
+                h = model.packed_hidden([(torch.tensor(opts[0]), ctx)])
+            finally:
+                ctx.kv.length = n_ctx
+                if saved:
+                    ctx.S.copy_(saved[0])
+                    ctx.conv_tail.copy_(saved[1])
         ends = torch.tensor([len(o) for o in opts]).cumsum(0).tolist()
         rows = [e - len(o) + j for o, e in zip(opts, ends) for j in range(len(o) - 1)]
         lp = _token_logprobs(model, h[torch.tensor(rows, device=h.device, dtype=torch.long)] if rows else h[:0],

@@ -20,7 +20,9 @@ from sampler import SamplingParams
 from server.app import create_app
 from server.metrics import Metrics
 from server.scheduler import QueueFull, Scheduler
+from state import ContiguousKVCache
 
+torch.set_grad_enabled(False)
 results = []
 def check(name, ok):
     results.append(bool(ok)); print(f"{'PASS' if ok else 'FAIL'}  {name}")
@@ -35,6 +37,35 @@ def alone(m, ctx, o, V):
     lg = m.forward(torch.tensor(ctx + o), state=m.new_state(len(ctx) + len(o)))[:, :V].float().cpu()
     lp = lg - torch.logsumexp(lg, 1, keepdim=True)
     return sum(lp[len(ctx) - 1 + j, o[j]].item() for j in range(len(o)))
+
+
+def rewind_checks(m, ctx, ids, V):
+    """Options one at a time (a memory budget of one byte): each scored on the context's own state, which is rewound
+    after it, with no fork. -> (scores == each option from its own fork, bit-exact; the context state afterwards is
+    exactly what its prefill left). The reference scores one option per call with room to fork, today's path."""
+    real_fork, real_new, made = ContiguousKVCache.fork, m.new_state, []
+    def refuse(self):
+        raise AssertionError("forked")
+    ContiguousKVCache.fork = refuse
+    m.new_state = lambda *a, **k: made.append(real_new(*a, **k)) or made[-1]
+    try:
+        got = score_options(m, ctx, ids, V, embeddings=True, budget=1)
+    except AssertionError:
+        got = None
+    finally:
+        ContiguousKVCache.fork = real_fork
+        del m.new_state
+    ref = [score_options(m, ctx, [o], V, embeddings=True, budget=1 << 40)[0] for o in ids]
+    same = got is not None and all(a.logprob == b.logprob and torch.equal(a.embedding, b.embedding)
+                                   for a, b in zip(got, ref))
+    st, n = made[0], len(ctx)
+    fresh = real_new(n + max(map(len, ids)))
+    for i in range(0, n, 512):                                       # the context prefill, as decision does it
+        m.forward(torch.tensor(ctx[i:i + 512]), state=fresh, last_only=True)
+    intact = (st.length == n and torch.equal(st.kv.k[:, :n], fresh.kv.k[:, :n])
+              and torch.equal(st.kv.v[:, :n], fresh.kv.v[:, :n]) and torch.equal(st.S, fresh.S)
+              and torch.equal(st.conv_tail, fresh.conv_tail))
+    return same, intact
 
 
 def core(eng, tol):
@@ -68,8 +99,32 @@ def core(eng, tol):
     c = score_options(m, ctx, ids, V, budget=1)                          # one option per packed pass
     d = max(abs(x.logprob - y.logprob) for x, y in zip(a, c))
     check(f"{name}: options in groups of one (memory budget) == all in one pass, max |d| {d:.1e} < {tol}", d < tol)
+    same, intact = rewind_checks(m, ctx, ids, V)
+    check(f"{name}: in groups of one, each option is scored on the context's own state with no fork, == from its own "
+          f"fork (bit-exact)", same)
+    check(f"{name}: afterwards the context's state is exactly what its prefill left (length, K/V, recurrent state)",
+          intact)
     return a
 
+
+# ---------------------------------------------------------------- tiny Cohere2, CPU: decide without forks
+# window 8; contexts below, at, one past and well past it; options of 6, 1 and 3 tokens, the longest first in the
+# canonical order, so a shorter option reads where a longer one wrote; fp32 and bf16 KV
+import tempfile
+
+from tiny_cohere2 import build
+
+with tempfile.TemporaryDirectory() as tmp:
+    _, make = build(tmp, window=8)
+    opts = [[3, 11, 12, 13, 14, 15], [7], [9, 9, 9]]
+    for kv in (torch.float32, torch.bfloat16):
+        tm, runs = make(kv_dtype=kv), []
+        for n in (5, 8, 9, 30, 40):
+            ctx = torch.randint(20, 500, (n,), generator=torch.Generator().manual_seed(n)).tolist()
+            runs.append(rewind_checks(tm, ctx, opts, 512))
+        check(f"tiny Cohere2 (window 8), {str(kv)[6:]} KV, contexts of 5-40 tokens: options scored on the context's own "
+              f"state with no fork == from their own forks (bit-exact), and the context left as its prefill left it "
+              f"({sum(a and b for a, b in runs)}/{len(runs)})", all(a and b for a, b in runs))
 
 # ---------------------------------------------------------------- CPU fp32 (exact)
 eng = load_engine("qwen3.5-0.8b", "cpu")
