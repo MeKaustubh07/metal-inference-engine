@@ -1,7 +1,7 @@
 """Run the OpenAI-compatible server.
 
 usage: serve.py [--model qwen3.5-2b] [--backend metal-int4] [--weights models/qwen3.5-2b/model.int4.qt]
-                [--host 127.0.0.1] [--port 8000] [--max-batch 8] [--max-waiting 64] [--kv-blocks 1024]
+                [--host 127.0.0.1] [--port 8000] [--max-batch 8] [--max-waiting 64] [--kv-blocks N]
                 [--max-model-len N] [--drain-timeout 25] [--prefill-chunk 512] [--batch-wait-ms 5]
                 [--no-lock-weights]
 
@@ -33,7 +33,8 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--max-batch", type=int, default=8)
     ap.add_argument("--max-waiting", type=int, default=64)
-    ap.add_argument("--kv-blocks", type=int, default=1024, help="16-token blocks; 24 KiB/token on Qwen3.5-2B")
+    ap.add_argument("--kv-blocks", type=int, default=None,
+                    help="16-token blocks of every layer (default: the model's, else 1024; 24 KiB/token on Qwen3.5-2B)")
     ap.add_argument("--max-model-len", type=int, default=None,
                     help="prompt + output tokens per request (default: the model's limit, else 4096; only lowers it)")
     ap.add_argument("--drain-timeout", type=float, default=25.0)

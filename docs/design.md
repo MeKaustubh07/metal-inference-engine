@@ -49,7 +49,7 @@ against Hugging Face `transformers`.
 | chat template | `src/chat.py` | Qwen3.5 ChatML incl. thinking-mode rules; or the model's own Jinja template, rendered as transformers renders it (Tiny Aya) |
 | model | `src/models/qwen3_5.py` | hybrid layers, fused projections, partial RoPE, output gate, DeltaNet prefill and decode |
 | model | `src/models/cohere2.py` | Tiny Aya: all-attention layers, LayerNorm feeding attention and MLP in parallel, interleaved RoPE (by reordering q/k rows at load) on sliding layers only, a 4096-token sliding window on 27 of 36 layers (they read only their window's suffix of the KV cache), logit scale, bf16 KV |
-| state | `src/state.py` | contiguous and paged KV caches, block allocator, `HybridState` |
+| state | `src/state.py` | contiguous and paged KV caches, block allocator (refuses double frees), `HybridState`; `GroupedKVPool` for Tiny Aya: layer groups as pool units, a per-sequence ring of blocks for the sliding layers (an 8K sequence holds 388 MiB of bf16 KV instead of 576) |
 | kernels | `src/kernels/*.metal` | matvec (bf16, INT8, INT4, batched), RMSNorm, LayerNorm (Tiny Aya), RoPE, decode attention, DeltaNet step, SwiGLU |
 | quantization | `src/quant.py` | block-32 INT8 / asymmetric INT4, calibrated mixed-precision policy, `.qt` format |
 | scheduler | `src/server/scheduler.py` | continuous batching, admission control, preemption, cancellation, drain |
@@ -166,6 +166,22 @@ The levers that follow from this model:
   because two hidden synchronizations (`int(positions[0])` in every layer, and a CPU-side embedding lookup) made
   the CPU wait for the GPU every layer. Removing them gave ~73 tok/s (`docs/bench/decode.md`; the starting point,
   plain PyTorch ops on MPS, was ~20).
+- **Host copies that neither wait nor read late.** On MPS, a `non_blocking=True` copy reads the host tensor when
+  the GPU reaches the transfer, not when it is issued. PyTorch keeps the source alive until then, so a freed temporary
+  is safe; but the CPU runs ahead, and a caller that reuses its ids tensor once `forward()` returns changes what an
+  already-issued step embeds (shown with the GPU busy). A blocking copy is correct but waits for every queued kernel:
+  ~0.3 ms at the start of a step, and in the middle of one the CPU stalls on the GPU (one per DeltaNet layer took
+  Qwen3.5 batch-1 decode from 20 to 28-30 ms). `state.to_device` copies from a private clone, without waiting.
+- **GPU memory headroom, and failures PyTorch does not report.** PyTorch's MPS allocator puts every tensor of
+  10-512 MiB in a 1 GiB heap until the process is "under memory pressure", which by default starts at 1.4x Metal's
+  recommended working set: never, on an 8 GB Mac. Tiny Aya INT8 with an fp32 KV cache at 4.8K tokens reached 5.21 of
+  the 5.33 GiB Metal recommends. While another process used the GPU too, Metal aborted command buffers for lack of
+  memory, and PyTorch 2.14, which never reads a command buffer's status, returned garbage without an error (the same
+  run had passed an hour earlier). The backend package sets a low watermark of 0.75x before torch allocates anything,
+  so above 4.0 GiB heaps are sized to their requests: 4.70 GiB, decode exact. Cost, INT8 at 4K over 6 alternating
+  runs: prefill 22.8 vs 21.9 s, decode 72.5 vs 74.8 ms/token (per pair -3.8 to +5.0 ms), so at most a few percent.
+  PyTorch still cannot report an abort, so the long Metal test reads them from macOS's unified log, where Metal
+  records each one.
 
 Prefill is compute-bound (`[T, K] × [K, N]` GEMMs), so it uses PyTorch's tuned MPS GEMM. The hand-written tiled
 GEMM is 4× slower and is kept only for study. Quantized weights are expanded to fp32 by one kernel pass per 32 MB

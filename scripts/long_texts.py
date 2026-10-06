@@ -5,7 +5,8 @@ is checked against a pinned SHA-256. Each Wikisource text is fetched at pinned p
 so the text of the scanned pages it transcludes is included) and the extracted text is checked against a pinned
 SHA-256. The same tokens therefore come back every time, and a changed source fails loudly instead.
 
-build(tok, n) takes about n tokens of running text from each language, in a fixed order, separated by blank lines.
+build(tok, n) takes about n tokens of each work's own text (from an anchor sentence where it begins, past prefaces,
+tables of contents and transcribers' notes), in a fixed order, separated by blank lines.
 
 usage: long_texts.py [--tokens-per-language 600]   (downloads what is missing, prints each section's token count)
 """
@@ -22,26 +23,29 @@ ROOT = Path(__file__).resolve().parent.parent
 CACHE = ROOT / "models" / "long_texts"
 AGENT = {"User-Agent": "metal-inference-engine long-context test (github.com/MeKaustubh07/metal-inference-engine)"}
 
-# language -> (source, what, SHA-256, characters of front matter to skip). Gutenberg: the ebook number; Wikisource:
-# (site, page revisions). All public domain: the authors died before 1930 or the works are centuries old.
+# language -> (source, what, SHA-256, start). Gutenberg: the ebook number; Wikisource: (site, page revisions). start:
+# the work's first words (its text begins there) or a number of characters to skip. All public domain: the authors died
+# before 1930 or the works are centuries old.
 SOURCES = {
     "en": (1342, "Pride and Prejudice (Jane Austen, 1813)",
-           "3f6bb9d6f78e0293b56acd4714dd68cb7d6d1d293402031ce9d5a216bcaf9d75", 3000),
+           "3f6bb9d6f78e0293b56acd4714dd68cb7d6d1d293402031ce9d5a216bcaf9d75",
+           "It is a truth universally acknowledged"),
     "fr": (17489, "Les Misérables, tome I : Fantine (Victor Hugo, 1862)",
-           "a5de514ba7b9f2e1790e7e259c4e8b7a35ae1d29e4bf9a5f8767039c58b80503", 3000),
+           "a5de514ba7b9f2e1790e7e259c4e8b7a35ae1d29e4bf9a5f8767039c58b80503",
+           "En 1815, M. Charles-François-Bienvenu Myriel"),
     "de": (22367, "Die Verwandlung (Franz Kafka, 1915)",
-           "359d3f5983c812393f4bd7ee49a350ffffc7d476015e58d6b84b6c848dd2b0e9", 500),
+           "359d3f5983c812393f4bd7ee49a350ffffc7d476015e58d6b84b6c848dd2b0e9", "Als Gregor Samsa eines Morgens"),
     "es": (2000, "Don Quijote (Miguel de Cervantes, 1605)",
-           "534f41d59f7142163fa0964076ac6351845c006ea6433778be637fac6d5b04d7", 8000),
+           "534f41d59f7142163fa0964076ac6351845c006ea6433778be637fac6d5b04d7", "En un lugar de la Mancha"),
     "hi": (("hi.wikisource.org", (469932, 469936, 469940, 469944, 469953, 469956)),
            "अंधेर नगरी (Bharatendu Harishchandra, 1881), its six acts as in भारतेंदु-नाटकावली (1935)",
-           "e2a49d8662097a2566547727f2ed2f7082c90948822f967366689d8eaeeea932", 300),
+           "e2a49d8662097a2566547727f2ed2f7082c90948822f967366689d8eaeeea932", "पहला अंक"),
     "ar": (("ar.wikisource.org", (529885,)), "ألف ليلة وليلة، الجزء الأول (One Thousand and One Nights, vol. 1)",
-           "a3d9f7f1bc6af9fd92b0a4e00c9f89579870bb56572122ee9b44be8cf23aa207", 0),
+           "a3d9f7f1bc6af9fd92b0a4e00c9f89579870bb56572122ee9b44be8cf23aa207", "حكي والله أعلم"),
     "zh": (23962, "西遊記 (Wu Cheng'en, 16th century)",
            "af3c9e408c0c58595b666ed9981b6fa1e9343f4bbc78309b1cb0818c32fc1f58", 2000),
     "ja": (1982, "羅生門 (Akutagawa Ryūnosuke, 1915)",
-           "7585b90b3c25951420ddf4857a53964a3b4b892c8aab5a0200c3633b53bb2a1e", 300),
+           "7585b90b3c25951420ddf4857a53964a3b4b892c8aab5a0200c3633b53bb2a1e", "或日の暮方の事である"),
 }
 
 
@@ -70,8 +74,8 @@ def _plain(page_html: str) -> str:
 
 
 def section(lang: str) -> str:
-    """One language's text, downloaded if missing and checked against its pin, front matter skipped."""
-    source, what, sha, skip = SOURCES[lang]
+    """One language's text, downloaded if missing and checked against its pin, from where the work begins."""
+    source, what, sha, start = SOURCES[lang]
     if isinstance(source, int):                                    # Project Gutenberg
         path = CACHE / f"pg{source}.txt"
         if not path.exists():
@@ -93,7 +97,8 @@ def section(lang: str) -> str:
             CACHE.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
         text = _checked(path.read_bytes(), sha, str(path)).decode("utf-8")
-    return re.sub(r"\n{3,}", "\n\n", text.replace("\r\n", "\n")).strip()[skip:]
+    text = re.sub(r"\n{3,}", "\n\n", text.replace("\r\n", "\n")).strip()
+    return text[text.index(start):] if isinstance(start, str) else text[start:]
 
 
 def parts(tok, n: int, langs=tuple(SOURCES)) -> list[str]:

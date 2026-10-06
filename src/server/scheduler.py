@@ -80,7 +80,10 @@ class Scheduler:
         self.max_model_len = min(max_model_len, cap) if cap else max_model_len
         self.prefill_chunk = prefill_chunk
         self.batch_wait = batch_wait_ms / 1e3
-        self.pool = self.model.new_paged_pool(kv_blocks, block_size, max_seqs=max(max_batch, 2))
+        # the pool's units: blocks of every layer (Qwen3.5), or of one layer group (Tiny Aya, whose sliding layers keep
+        # a ring of blocks per sequence, sized for chunks of at most prefill_chunk tokens)
+        self.pool = self.model.new_paged_pool(kv_blocks, block_size, max_seqs=max(max_batch, 2),
+                                              max_chunk=prefill_chunk)
         self.block_size = block_size
         self.waiting: collections.deque[Request] = collections.deque()
         self.prefilling: list[Request] = []                  # admitted, prompt partly in the state
@@ -103,7 +106,8 @@ class Scheduler:
             except (OSError, ValueError) as e:                # serve anyway, without the guarantee
                 self.lock_error = str(e)
         metrics.set("weights_locked_bytes", self.weights_locked)
-        metrics.set("kv_blocks_total", kv_blocks)
+        metrics.set("kv_blocks_total", self.pool.allocator.num_blocks)            # in units of the pool
+        metrics.set("kv_unit_bytes", self.pool.unit_bytes)
         metrics.set("kv_blocks_free", self.pool.allocator.num_free)
         self.thread = threading.Thread(target=self._loop, name="engine", daemon=True)
         self.thread.start()
@@ -233,7 +237,8 @@ class Scheduler:
                 return                                        # nothing arrived within batch_wait: go
 
     def _blocks_for(self, n_tokens: int) -> int:
-        return -(-n_tokens // self.block_size)
+        """Pool units a sequence of n_tokens positions holds (only grows with n_tokens)."""
+        return self.pool.blocks_for(n_tokens)
 
     def _admit(self) -> None:
         """Move waiting requests to prefilling while there is a batch slot, a state slot and room in the KV pool.
@@ -247,9 +252,10 @@ class Scheduler:
                 if req.cancelled:
                     self.waiting.popleft(); self._finish(req, "cancelled"); continue
                 ids = req.prompt_ids + req.generated          # a preempted request recomputes what it produced
-                # headroom: keep one free block per sequence in flight, since each may cross a block boundary on
-                # its next step; otherwise the newcomer would be preempted right away and its prefill wasted
-                if self._blocks_for(len(ids) + 1) + in_flight > self.pool.allocator.num_free:
+                # headroom: keep one step's growth free per sequence in flight (a unit per group), since each may
+                # cross a block boundary on its next step; otherwise the newcomer would be preempted right away and
+                # its prefill wasted
+                if self._blocks_for(len(ids) + 1) + in_flight * self.pool.max_step_units > self.pool.allocator.num_free:
                     return                                    # wait for running requests to free blocks
                 if not self.pool.free_seqs:
                     return                                    # wait for a DeltaNet state slot too
@@ -442,3 +448,5 @@ class Scheduler:
         self.metrics.set("waiting_requests", len(self.waiting))
         self.metrics.set("waiting_jobs", len(self.jobs) + (self.job is not None))
         self.metrics.set("kv_blocks_free", self.pool.allocator.num_free)
+        self.metrics.set("kv_bytes_held", (self.pool.allocator.num_blocks - self.pool.allocator.num_free)
+                         * self.pool.unit_bytes)

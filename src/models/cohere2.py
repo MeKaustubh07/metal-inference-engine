@@ -24,7 +24,8 @@ head is widened HEAD_ROWS rows at a time. Slower, the same numbers; peak memory 
 
 kv_dtype: what the KV cache stores. fp32 (the default) keeps K/V exactly as computed, as HF does with fp32
 activations; bf16 (Tiny Aya served on Metal: 72 KiB per token instead of 144) rounds them as they are stored, and every
-read widens them back to fp32, so all arithmetic stays fp32. The rounding is a measured deviation (tests/test_aya_quant.py).
+read widens them back to fp32, so all arithmetic stays fp32. The rounding is a measured deviation
+(tests/test_aya_quant.py, tests/test_aya_long_quant.py).
 """
 import torch
 
@@ -32,7 +33,7 @@ from backend.torch_ref import TorchBackend
 from config import Cohere2Config
 from models.packing import Segment, advance_all, pack, reserve_all
 from quant import concat_rows, select_rows
-from state import ContiguousKVCache, HybridPool, HybridState, PagedKVPool, PagedSequence
+from state import ContiguousKVCache, GroupedKVPool, HybridPool, HybridState, WindowedSequence, to_device
 
 P = "model."
 HEAD_ROWS = 32768                 # stream=True: rows of the tied head widened at a time (256 MB at hidden 2048)
@@ -93,10 +94,14 @@ class Cohere2Model:
                                    device=self.b.device, dtype=self.kv_dtype)
         return HybridState(kv, device=self.b.device)
 
-    def new_paged_pool(self, num_blocks: int, block_size: int = 16, max_seqs: int = 8) -> HybridPool:
+    def new_paged_pool(self, num_blocks: int, block_size: int = 16, max_seqs: int = 8, max_chunk: int = 512,
+                       poison: bool = False) -> HybridPool:
+        """num_blocks blocks of every layer, as units of one layer group (state.GroupedKVPool): the sliding layers
+        keep a ring of blocks per sequence, so their memory stops growing past the window. max_chunk: the longest
+        forward a sequence will run (the scheduler's prefill chunk); a longer one is refused before anything moves."""
         c = self.config
-        kv = PagedKVPool(c.num_hidden_layers, c.num_key_value_heads, c.head_dim, num_blocks, block_size,
-                         device=self.b.device, dtype=self.kv_dtype)
+        kv = GroupedKVPool([self._window(i) for i in range(c.num_hidden_layers)], c.num_key_value_heads, c.head_dim,
+                           num_blocks, block_size, max_chunk, device=self.b.device, dtype=self.kv_dtype, poison=poison)
         return HybridPool(kv, max_seqs, 0, 0, 0, 0, 0, 1, device=self.b.device)
 
     def new_paged_state(self, pool: HybridPool) -> HybridState:
@@ -118,7 +123,7 @@ class Cohere2Model:
     # ---------------------------------------------------------------- layers
     def embed(self, ids: torch.Tensor) -> torch.Tensor:
         table = self.weights.get(P + "embed_tokens.weight") if self.stream else self._w("embed_tokens.weight")
-        return self.b.embedding(table, ids.to(self.b.device, non_blocking=True))
+        return self.b.embedding(table, to_device(ids, self.b.device))
 
     def _qkv(self, i: int):
         """Fused [q ; k ; v] projection; on RoPE (sliding) layers, q and k rows reordered for interleaved RoPE."""
@@ -174,6 +179,8 @@ class Cohere2Model:
         """Embedding and all layers over the packed tokens -> hidden states [N, hidden] (before the final norm)."""
         for sg in segs:
             self._check_length(sg.start + sg.hi - sg.lo)
+            if sg.state is not None and hasattr(sg.state.kv, "check_forward"):   # the ring can hold the chunk
+                sg.state.kv.check_forward(sg.start, sg.start + sg.hi - sg.lo)
         reserve_all(segs)                            # fail before any layer mutates state (atomic forward)
         h = self.embed(ids)
         if capture is not None:
@@ -214,7 +221,7 @@ class Cohere2Model:
         token [len(chunks), vocab]. Same result as calling forward on each chunk, with each weight read once."""
         ids, positions, segs = pack(chunks, self.b.device)
         h = self._layers(ids, positions, segs)
-        last = torch.tensor([sg.hi - 1 for sg in segs]).to(self.b.device, non_blocking=True)
+        last = to_device(torch.tensor([sg.hi - 1 for sg in segs]), self.b.device)
         return self.head(self._final_norm(h[last]))
 
     def packed_hidden(self, chunks: list[tuple[torch.Tensor, HybridState]],
@@ -237,9 +244,9 @@ class Cohere2Model:
         for st in states:
             st.reserve(st.length + 1)
         starts = [st.length for st in states]
-        positions = torch.tensor(starts, device=b.device, dtype=torch.int32)
+        positions = to_device(torch.tensor(starts, dtype=torch.int32), b.device)
         kvs = [st.kv for st in states]
-        paged = all(isinstance(kv, PagedSequence) and kv.pool is kvs[0].pool for kv in kvs)
+        paged = all(isinstance(kv, WindowedSequence) and kv.pool is kvs[0].pool for kv in kvs)
         if paged:                                       # one KV write and one attention dispatch per layer for all
             kv_pool = kvs[0].pool
             blocks, offsets, tables, lens = kv_pool.batch_layout(kvs, starts)
@@ -248,10 +255,11 @@ class Cohere2Model:
             x = b.layer_norm(h, self._vec(f"layers.{i}.input_layernorm.weight"), c.layer_norm_eps)
             q, k, v = self._project(i, x, positions)
             W = self._window(i)
-            if paged:
-                kv_pool.write_batch(i, blocks, offsets, k, v)
-                o = b.paged_attention(q.contiguous(), kv_pool.k[i], kv_pool.v[i], tables, lens, kv_pool.block_size,
-                                      window=W)
+            if paged:                                   # layer i is slot `slot` of group g's units
+                g, slot = kv_pool.layer_map[i]
+                kv_pool.write_batch(slot, blocks[g], offsets, k, v)
+                o = b.paged_attention(q.contiguous(), kv_pool.k[slot], kv_pool.v[slot], tables[g], lens,
+                                      kv_pool.block_size, window=W)
             else:
                 outs = []
                 for j, st in enumerate(states):

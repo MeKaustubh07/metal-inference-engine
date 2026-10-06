@@ -31,10 +31,15 @@ MODELS = {
     # thinking mode. policy: written by scripts/calibrate_quant.py; until then INT4 warns. backends: only the
     # quantized Metal ones fit in 8 GB (fp32 on the CPU would need 13.4 GB, bf16 on the GPU 6.7 GB). kv_dtype: its KV
     # is 6x Qwen3.5-2B's per token (36 layers x 4 heads x 128), so it is stored in bf16 (the other models keep fp32).
+    # kv_blocks: the server's pool, 768 blocks of every layer = 864 MiB of bf16 KV (two 8K sequences, rings counted);
+    # with the INT4 weights 8K prompts then hold 4.45 GiB of GPU memory. With INT8, 5.48 GiB: over the 5.33 GiB Metal
+    # recommends on an 8 GB Mac, where another GPU user can make Metal abort work silently (docs/results-log.md, M5
+    # part C), so long prompts there want INT4.
     "tiny-aya-global": dict(dir="models/tiny-aya-global", family="cohere2", weights="model.safetensors.index.json",
                             eos=[3, 6, 261001], chat="template", policy="configs/quant/tiny-aya-global.json",
                             sampling=dict(temperature=0.1, top_p=0.95, top_k=50, repetition_penalty=1.0),
-                            max_model_len=8192, backends=("metal-int8", "metal-int4"), kv_dtype="bfloat16"),
+                            max_model_len=8192, backends=("metal-int8", "metal-int4"), kv_dtype="bfloat16",
+                            kv_blocks=768),
 }
 FAMILIES = {"qwen3_5": (Qwen35Config, Qwen35Model),          # family -> (config class, model class)
             "cohere2": (Cohere2Config, Cohere2Model)}
@@ -50,6 +55,7 @@ class Engine:
     sampling: dict = field(default_factory=dict)
     max_model_len: int | None = None           # a model's hard cap on prompt + generated tokens (None: no cap)
     thinking: bool = False                     # the model has a reasoning mode (Qwen3.5: <think> ... </think>)
+    kv_blocks: int | None = None               # the server's default KV pool, in blocks of every layer (None: 1024)
 
 
 def chat_style(spec: dict, d: Path) -> str | TemplateChat:
@@ -91,4 +97,4 @@ def load_engine(name: str, backend: str = "metal", weights_file: str | None = No
     model = model_cls(cfg, weights, be, **({"kv_dtype": getattr(torch, spec["kv_dtype"])} if "kv_dtype" in spec else {}))
     caps = [c for c in (spec.get("max_model_len"), getattr(model, "max_positions", None)) if c]
     return Engine(name, model, tok, set(spec["eos"]), chat_style(spec, d), spec["sampling"],
-                  min(caps) if caps else None, spec.get("thinking", False))
+                  min(caps) if caps else None, spec.get("thinking", False), spec.get("kv_blocks"))

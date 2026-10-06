@@ -44,7 +44,7 @@ check(f"windowed ops.attention == oracle on all {n} cases (W 1-10, T 1-8, start 
       f"worst {worst:.1e}", worst < 1e-5)
 missed = [k for k, d in off_by_one.items() if d < 1e-3]
 check(f"sensitivity: a window off by one (W - 1 or W + 1) differs from the oracle for all {len(off_by_one)} "
-      "window sizes", not missed)
+      "off-by-one windows over W 1-10", not missed)
 
 # 2. realistic heads and scales, a chunk longer than the window and one ending exactly at it
 for T, S, W, scale in ((5, 40, 7, 1), (5, 40, 7, 30), (12, 12, 4, 1), (6, 13, 13, 1), (1, 300, 64, 1)):
@@ -170,23 +170,94 @@ with tempfile.TemporaryDirectory() as tmp:
         rel(y, model.forward(torch.cat([ids[:30], torch.tensor([9])]))[-1]) < 1e-5
     check("model: a fork at position 30 and the original continue independently and exactly", ok)
 
-    # 6. the sliding layers never read keys before their window: in a paged pool, poison (NaN) every block that lies
-    # wholly before the next query's window, in the sliding layers only (the full layers still need them), then
-    # decode on and continue with another chunk: the result stays finite and equal to an unpoisoned run
-    pool = model.new_paged_pool(num_blocks=32, block_size=4, max_seqs=2)
-    st, clean = model.new_paged_state(pool), model.new_state(64)
-    model.forward(ids[:30], state=st); model.forward(ids[:30], state=clean)
-    first_needed = 30 - 8 + 1                                  # the next query (position 30) sees keys 23 .. 30
-    for i in range(model.config.num_hidden_layers):
-        if model.config.is_sliding(i):
-            for blk in st.kv.block_table[:first_needed // 4]:
-                pool.kv.k[i, blk], pool.kv.v[i, blk] = float("nan"), float("nan")
-    outs = [model.forward(torch.tensor([t]), state=st) for t in (3, 4, 5)] + [model.forward(ids[30:40], state=st)]
-    want = [model.forward(torch.tensor([t]), state=clean) for t in (3, 4, 5)] + [model.forward(ids[30:40], state=clean)]
-    got, want = torch.cat(outs), torch.cat(want)
-    check(f"model: sliding layers' blocks before the window poisoned with NaN: 3 decode steps and a 10-token chunk "
-          f"stay finite and == an unpoisoned run ({rel(got, want):.1e})",
-          bool(torch.isfinite(got).all()) and rel(got, want) < 1e-6)
+    # 6. the grouped pool's ring (M5 part C): with chunks of at most 3 tokens the sliding groups keep a ring of
+    # R = ceil((8 + 3 + 4 - 2) / 4) = 4 blocks of 4, so over 40 positions every slot is reused 2-3 times; poison=True
+    # fills a slot with NaN whenever it takes a new block, so any read of a stale block shows. It must still be HF
+    ring_pool = model.new_paged_pool(num_blocks=64, block_size=4, max_seqs=4, max_chunk=3, poison=True)
+    st, pos, outs = model.new_paged_state(ring_pool), 0, []
+    for n in [3, 1, 2, 3, 3, 2, 1, 3, 3, 3, 2, 3, 3, 3, 3, 2]:                 # 40 positions in chunks <= 3
+        outs.append(model.forward(ids[pos:pos + n], state=st)); pos += n
+    got = torch.cat(outs)
+    held = [len(t) for t in st.kv.tables]
+    check(f"ring: 40 positions in chunks <= 3 with every ring slot reused, NaN-poisoned: == HF "
+          f"{rel(got, ref_logits):.1e}; units held per group {held} (full: 10 blocks; sliding: rings of "
+          f"{ring_pool.kv.ring})",
+          rel(got, ref_logits) < 1e-5 and held == [10, 4, 4, 4] and bool(torch.isfinite(got).all()))
+    nxt, gen = int(got[-1].argmax()), []
+    for _ in range(10):                                        # decode on past position 40, through the ring
+        gen.append(nxt)
+        nxt = int(model.forward(torch.tensor([nxt]), state=st)[0].argmax())
+    check("ring: 10 greedy tokens past position 40 == HF's", gen == hf_greedy(hf, ids, 10))
+
+    # 6b. batched decode through the rings == each sequence alone; a forward the ring cannot hold is refused before
+    # anything moves (alone and in a pack)
+    ring_pool = model.new_paged_pool(num_blocks=64, block_size=4, max_seqs=4, max_chunk=3, poison=True)
+    lens3, alone3, rings = (5, 19, 30), [], []
+    for n in lens3:
+        r, a = model.new_paged_state(ring_pool), model.new_state(64)
+        for i in range(0, n, 3):
+            model.forward(ids[i:min(n, i + 3)], state=r)
+        model.forward(ids[:n], state=a)
+        rings.append(r); alone3.append(a)
+    worst = 0.0
+    for step in range(6):                                      # 30 -> 36 crosses ring slots too
+        b = model.decode_batch([7 + step, 9 + step, 11 + step], rings)
+        one = torch.cat([model.forward(torch.tensor([t + step]), state=a) for t, a in zip((7, 9, 11), alone3)])
+        worst = max(worst, rel(b, one))
+    check(f"ring: batched decode of 3 sequences (5, 19, 30 positions) == each alone, 6 steps, worst {worst:.1e}",
+          worst < 1e-5)
+    free, length, tables = ring_pool.allocator.num_free, rings[1].length, [list(t) for t in rings[1].kv.tables]
+    refused = []
+    for attempt in (lambda: model.forward(ids[:20], state=rings[1]),
+                    lambda: model.forward_packed([(ids[:2], rings[0]), (ids[:20], rings[1])])):
+        try:
+            attempt(); refused.append(False)
+        except ValueError:
+            refused.append(True)
+    check("ring: a 20-token chunk (the ring holds chunks of 3) is refused alone and in a pack, nothing moved",
+          refused == [True, True] and ring_pool.allocator.num_free == free and rings[1].length == length
+          and rings[0].length == 5 + 6 and [list(t) for t in rings[1].kv.tables] == tables)
+
+    # 6c. the scheduler on the grouped pool: the real Scheduler (engine thread, admission, packed chunked prefill,
+    # batched decode, preemption) with prefill chunks of 3 (rings of 4 blocks) and 14 blocks of every layer (56 units),
+    # too few for 4 requests of up to 57 positions at once: each request's 30 tokens == HF greedy, at least one
+    # preemption, every unit and state slot back at the end; never-fit counts units with the rings (blocks_for)
+    import types
+    from sampler import SamplingParams
+    from server.metrics import Metrics
+    from server.scheduler import Scheduler
+
+    class Tok:                                                 # what the scheduler needs of a tokenizer
+        @staticmethod
+        def vocab_size():
+            return 512
+
+        @staticmethod
+        def decode(toks):
+            return " ".join(map(str, toks))
+    eng = types.SimpleNamespace(model=model, tokenizer=Tok, eos_ids=set(), max_model_len=8192, name="tiny")
+    sched = Scheduler(eng, Metrics(), max_batch=3, kv_blocks=14, block_size=4, prefill_chunk=3)
+    prompts = [ids[:5], ids[3:22], ids[10:21], ids[:27]]
+    reqs = [sched.submit(p.tolist(), SamplingParams(temperature=0, repetition_penalty=1.0), 30) for p in prompts]
+    for r in reqs:
+        while r.out.get(timeout=300)[0] == "token":
+            pass
+    want = [hf_greedy(hf, p, 30) for p in prompts]
+    c_, pool = sched.metrics.counters, sched.pool
+    n_pre = c_["requests_preempted_total"]
+    check(f"scheduler on the grouped pool (rings of {pool.kv.ring} blocks): {n_pre} preemption{'s' * (n_pre != 1)}, "
+          f"every request's 30 tokens == HF greedy, all {pool.allocator.num_blocks} units and the state "
+          "slots back", c_["requests_preempted_total"] >= 1 and [r.generated for r in reqs] == want
+          and all(r.finish_reason == "length" for r in reqs) and pool.allocator.num_free == pool.allocator.num_blocks
+          and len(pool.free_seqs) == 3)
+    try:
+        sched.submit(list(range(3, 63)), SamplingParams(temperature=0), 200); fits = True   # 260 positions: 77 units
+    except ValueError:
+        fits = False
+    check(f"scheduler: never-fit counts the rings: 100 positions need {sched._blocks_for(100)} units (not "
+          f"{-(-100 // 4) * 4}), 260 need {sched._blocks_for(260)} > {pool.allocator.num_blocks}: refused",
+          sched._blocks_for(100) == 25 + 3 * 4 and not fits)
+    sched.shutdown(5)
 
     # 7. bf16 KV past the window: paged == contiguous exactly, the same chunking
     m16 = make(kv_dtype=torch.bfloat16)
@@ -211,6 +282,67 @@ with tempfile.TemporaryDirectory() as tmp:
     check(f"answer-key generator: chunked prefill (5, 3, 17, 15) over one cache == HF's full forward past the "
           f"window: final norm {rel(h, ref['final_norm']):.1e}, logits {rel(streamed.head(h), ref_logits):.1e}",
           rel(h, ref["final_norm"]) < 1e-5 and rel(streamed.head(h), ref_logits) < 1e-5)
+
+# 9. the block allocator refuses what would let two sequences share a block: a double free, a block it never handed
+# out, an id out of range; and it still hands out the most recently freed block first
+from state import BlockAllocator, GroupedKVPool, OutOfBlocks
+alloc = BlockAllocator(4)
+a, b = alloc.allocate(), alloc.allocate()
+bad = []
+for blocks in ([a, a], [3], [-1], [9]):
+    try:
+        alloc.free(blocks); bad.append(blocks)
+    except ValueError:
+        pass
+alloc.free([b])
+check("block allocator: freeing twice, a never-allocated block, -1 or out of range raises; frees stay LIFO",
+      bad == [] and alloc.allocate() == b and alloc.num_free == 2)
+
+# 10. the grouped pool on its own (fake dims, no model): random chunk schedules up to max_chunk, every read equal to
+# what was written at those positions (a dict oracle), poisoned ring slots, and after every step the units held:
+# full groups one per block, sliding groups min(R, blocks), free + held == total
+import random
+rnd = random.Random(0)
+worst_ok, cases = True, 0
+for W, bs, C in ((8, 4, 3), (8, 4, 7), (6, 3, 4), (5, 4, 4), (5, 3, 7)):
+    layers = [W, W, W, None] * 2
+    pool = GroupedKVPool(layers, 1, 2, num_blocks=64, block_size=bs, max_chunk=C, poison=True)
+    seq, oracle, pos = pool.new_sequence(), {}, 0
+    for _ in range(30):
+        n = rnd.randint(1, C)
+        seq.check_forward(pos, pos + n)
+        for layer, w in enumerate(layers):
+            k, v = torch.randn(n, 1, 2), torch.randn(n, 1, 2)
+            seq.write(layer, pos, k, v)
+            for j in range(n):
+                oracle[layer, pos + j] = (k[j], v[j])
+            lo = max(0, pos - w + 1) if w else 0
+            K, V = seq.read(layer, pos + n, lo)
+            worst_ok &= torch.equal(K, torch.stack([oracle[layer, q][0] for q in range(lo, pos + n)])) and \
+                torch.equal(V, torch.stack([oracle[layer, q][1] for q in range(lo, pos + n)]))
+        seq.advance(n); pos += n
+        nb = -(-pos // bs)
+        worst_ok &= all(len(t) == (min(pool.ring, nb) if sl else nb) for t, sl in zip(seq.tables, pool.sliding))
+        worst_ok &= pool.allocator.num_free + sum(map(len, seq.tables)) == pool.allocator.num_blocks
+        cases += 1
+    try:                                                       # a chunk past the ring: refused, nothing moved
+        seq.check_forward(pos, pos + C + bs + W); worst_ok = False
+    except ValueError:
+        pass
+    seq.free()
+    worst_ok &= pool.allocator.num_free == pool.allocator.num_blocks
+check(f"grouped pool: {cases} random chunks over 5 (window, block, max chunk) settings: every read == what was "
+      "written, poisoned stale slots never read, units held exact, an oversized chunk refused, all freed", worst_ok)
+small = GroupedKVPool([8, 8, 8, None] * 2, 1, 2, num_blocks=3, block_size=4, max_chunk=4)
+s1, s2 = small.new_sequence(), small.new_sequence()
+s1.reserve(8)
+try:
+    s2.reserve(12); took = True
+except OutOfBlocks:
+    took = False
+check(f"grouped pool: a reserve the pool cannot satisfy takes nothing (free {small.allocator.num_free} of "
+      f"{small.allocator.num_blocks} units)",
+      not took and s2.tables == [[], [], [], []] and small.allocator.num_free == 4)
 
 print(f"\n{sum(results)}/{len(results)} passed")
 sys.exit(0 if all(results) else 1)

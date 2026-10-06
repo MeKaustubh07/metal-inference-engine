@@ -241,7 +241,7 @@ class MetalBackend(TorchBackend):
             S, conv, n_linear, seqs = states[0].S, states[0].conv_tail, states[0].S.shape[0], self._seq0
         elif pool is not None and all(getattr(st, "pool", None) is pool for st in states):
             S, conv, n_linear = pool.S, pool.conv, pool.S.shape[1]
-            seqs = torch.tensor([st.seq for st in states], dtype=torch.int32).to(self.device, non_blocking=True)
+            seqs = pool.seq_index(states)
         else:
             return super().deltanet_decode_batch(qkv, z, b, a, states, slot, conv_w, A_log, dt_bias, norm_w, eps, dims)
         H, dk, dv, key_dim = dims

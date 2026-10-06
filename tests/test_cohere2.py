@@ -7,10 +7,12 @@ LayerNorm eps at every norm; greedy tokens; cached == uncached; paged == contigu
 packed prefill == separate, with a continuing chunk; forks that diverge at the same position; an untied head refused;
 and the length cap (max_position_embeddings) on a model with an 8-token window and a 16-position cap: exact up to 16
 positions with the window binding, refused past them, for fresh and continuing sequences, packs and mixed batches, with
-no state moved and no KV block taken (the window itself: tests/test_window.py).
+no state moved and no KV block taken (the window itself: tests/test_window.py). On a Metal GPU, also: a decode step
+embeds its token id as it was when called, and every non_blocking copy in src/ goes through state.to_device.
 """
 import os
 import sys
+from pathlib import Path
 import tempfile
 import types
 
@@ -309,6 +311,36 @@ with tempfile.TemporaryDirectory() as tmp:                     # 10. the length 
     check("cap 16: a batched decode with one sequence at it is refused, no block taken, no state moved",
           refused and (a.length, b.length) == (5, 16) and pool.allocator.num_free == free
           and (len(a.kv.block_table), len(b.kv.block_table)) == tables)
+
+# 11. on the GPU, a decode step embeds its token id as it was when forward() was called. A non_blocking copy reads
+# the host tensor when the GPU reaches it, so a caller that reused its tensor once forward() returned changed what an
+# already-issued step embedded (torch keeps a freed source alive: only a written one is a hazard). state.to_device
+# copies from a private clone, and every non_blocking copy in src/ goes through it
+hits = [f"{f}:{i}" for f in sorted(Path("src").rglob("*.py")) if f.name != "state.py"
+        for i, line in enumerate(f.read_text().splitlines(), 1) if "non_blocking" in line]
+check(f"every non_blocking host copy in src/ goes through state.to_device ({hits or 'none elsewhere'})", not hits)
+if torch.backends.mps.is_available():
+    from backend.metal import MetalBackend
+    with tempfile.TemporaryDirectory() as tmp:
+        _, make = build(tmp, window=4096)
+        gpu = make(backend=MetalBackend())
+        prompt = torch.randint(3, 512, (23,), generator=torch.Generator().manual_seed(1))
+        toks, busy, runs = list(range(40, 46)), torch.randn(2048, 2048, device="mps"), []
+        for overwrite in (False, True):
+            st = gpu.new_state(64)
+            gpu.forward(prompt, state=st, last_only=True)
+            torch.mps.synchronize()
+            for _ in range(8):                                 # ~100 ms of GPU work queued, so every step below is
+                busy = busy @ busy / 64                        # issued while the GPU is still busy
+            steps = []
+            for t in toks:
+                x = torch.tensor([t])
+                steps.append(gpu.forward(x, state=st))
+                if overwrite:
+                    x[0] = 0                                   # the caller reuses its tensor once forward() returns
+            runs.append(torch.cat(steps).cpu())
+        check("Metal: 6 decode steps issued while the GPU is busy give the same logits when each token id is "
+              "overwritten as soon as forward() returns (the id is copied at the call)", torch.equal(runs[0], runs[1]))
 
 print(f"\n{sum(results)}/{len(results)} passed")
 sys.exit(0 if all(results) else 1)

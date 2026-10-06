@@ -126,9 +126,10 @@ class OutputFilter:
         return [("content", text)] if text else []
 
 
-def create_app(engine, max_batch: int = 8, max_waiting: int = 64, kv_blocks: int = 1024,
+def create_app(engine, max_batch: int = 8, max_waiting: int = 64, kv_blocks: int | None = None,
                max_model_len: int | None = None, drain_timeout: float = 2.0, prefill_chunk: int = 512,
                batch_wait_ms: float = 5.0, lock_weights: bool = False) -> FastAPI:
+    kv_blocks = kv_blocks or getattr(engine, "kv_blocks", None) or 1024   # default: the model's pool (else 1024)
     cap = getattr(engine, "max_model_len", None)
     if max_model_len is None:                           # default: the model's own limit (else 4096)
         max_model_len = cap or 4096

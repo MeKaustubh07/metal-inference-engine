@@ -9,8 +9,8 @@ positions inside the chat template (the token read is a template token and the n
 chat's last position, which predicts the reply's first token, stays in) and decode steps from the reference's own stop
 token on, where a server would have stopped: there the reference is unsure (top probability ~0.5) and the KL swings
 most. Also reported: greedy agreement, resident weights and single-stream decode speed. Each scheme is measured
-twice on the same loaded weights, with an fp32 and a bf16 KV cache (M5): the gates judge the shipped bf16 cache, and
-its cost is the change in KL. Needs the gated files, the answer key and the .qt files (scripts/quantize.py); otherwise
+twice on the same loaded weights, with an fp32 and a bf16 KV cache (M5): the gates judge both caches (the shipped one
+is bf16), and its cost is the change in KL. Needs the gated files, the answer key and the .qt files (scripts/quantize.py); otherwise
 SKIP, or FAIL naming the command.
 """
 import gc
@@ -117,14 +117,15 @@ for scheme in ("int8", "int4"):
     gc.collect()
     torch.mps.empty_cache()
 
-if ("int8", torch.bfloat16) in summary:                       # the gates: the shipped configuration (bf16 KV)
-    s, d = summary["int8", torch.bfloat16], summary["int8", "delta"]
-    check(f"int8: KL vs the fp32 answer key < 0.05 ({s['kl']:.4f}) and top-1 flips <= 2% of non-tied positions "
-          f"({s['flips']}/{s['clear']})", s["kl"] < 0.05 and s["flips"] <= 0.02 * s["clear"])
-    check(f"int8: bf16 KV adds at most 0.01 to the KL ({d['kl']:+.4f})", d["kl"] <= 0.01)
-if ("int4", torch.bfloat16) in summary:
-    s = summary["int4", torch.bfloat16]
-    check(f"int4: KL vs the fp32 answer key < 0.15 ({s['kl']:.4f}) and top-1 flips <= 10% of non-tied positions "
-          f"({s['flips']}/{s['clear']})", s["kl"] < 0.15 and s["flips"] <= 0.10 * s["clear"])
+for scheme, kl_max, flips_max in (("int8", 0.05, 0.02), ("int4", 0.15, 0.10)):   # the gates, on both KV caches:
+    for kv in (torch.float32, torch.bfloat16):                                    # a broken one must not hide
+        if (scheme, kv) in summary:
+            s = summary[scheme, kv]
+            check(f"{scheme}, {str(kv)[6:]} KV: KL vs the fp32 answer key < {kl_max} ({s['kl']:.4f}) and top-1 flips "
+                  f"<= {flips_max:.0%} of non-tied positions ({s['flips']}/{s['clear']})",
+                  s["kl"] < kl_max and s["flips"] <= flips_max * s["clear"])
+if ("int8", "delta") in summary:
+    d = summary["int8", "delta"]
+    check(f"int8: bf16 KV changes the KL by at most 0.01 either way ({d['kl']:+.4f})", abs(d["kl"]) <= 0.01)
 print(f"\n{sum(results)}/{len(results)} passed")
 sys.exit(0 if all(results) else 1)

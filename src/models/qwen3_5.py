@@ -14,7 +14,7 @@ from backend.torch_ref import TorchBackend
 from config import Qwen35Config
 from quant import concat_rows, select_rows
 from models.packing import Segment, advance_all, pack, reserve_all
-from state import ContiguousKVCache, HybridPool, HybridState, PagedKVPool, PagedSequence
+from state import ContiguousKVCache, HybridPool, HybridState, PagedKVPool, PagedSequence, to_device
 
 P = "model.language_model."
 
@@ -62,8 +62,10 @@ class Qwen35Model:
         return HybridState(kv, len(self.linear_layers), c.linear_num_value_heads, c.linear_key_head_dim,
                            c.linear_value_head_dim, self.conv_dim, c.linear_conv_kernel_dim, device=self.b.device)
 
-    def new_paged_pool(self, num_blocks: int, block_size: int = 16, max_seqs: int = 8) -> HybridPool:
-        """Paged KV blocks for the attention layers + `max_seqs` DeltaNet state slots (~19 MB each on 0.8B/2B)."""
+    def new_paged_pool(self, num_blocks: int, block_size: int = 16, max_seqs: int = 8,
+                       max_chunk: int | None = None) -> HybridPool:
+        """Paged KV blocks for the attention layers + `max_seqs` DeltaNet state slots (~19 MB each on 0.8B/2B).
+        max_chunk is ignored: every attention layer is full, so a sequence keeps all of its blocks."""
         c = self.config
         kv = PagedKVPool(len(self.attn_layers), c.num_key_value_heads, c.head_dim, num_blocks, block_size,
                          device=self.b.device, dtype=torch.float32)
@@ -75,7 +77,7 @@ class Qwen35Model:
 
     # ---------------------------------------------------------------- layers
     def embed(self, ids: torch.Tensor) -> torch.Tensor:
-        return self.b.embedding(self._w("embed_tokens.weight"), ids.to(self.b.device, non_blocking=True))
+        return self.b.embedding(self._w("embed_tokens.weight"), to_device(ids, self.b.device))
 
     def _qkvg(self, i: int):
         """Fused [query(Hq*d) ; k ; v ; gate(Hq*d)] projection. q_proj interleaves [query_h | gate_h] per head."""
@@ -208,7 +210,7 @@ class Qwen35Model:
         token [len(chunks), vocab]. Same result as calling forward on each chunk, with each weight read once."""
         ids, positions, segs = pack(chunks, self.b.device)
         h = self._layers(ids, positions, segs)
-        last = torch.tensor([sg.hi - 1 for sg in segs]).to(self.b.device, non_blocking=True)
+        last = to_device(torch.tensor([sg.hi - 1 for sg in segs]), self.b.device)
         h = self.b.rms_norm(h[last], self._vec("norm.weight", one_plus=True), self.config.rms_norm_eps)
         return self.b.linear(h, self._w("embed_tokens.weight"))
 
@@ -235,7 +237,7 @@ class Qwen35Model:
         for st in states:
             st.reserve(st.length + 1)
         starts = [st.length for st in states]
-        positions = torch.tensor(starts, device=b.device, dtype=torch.int32)
+        positions = to_device(torch.tensor(starts, dtype=torch.int32), b.device)
         kvs = [st.kv for st in states]
         paged = all(isinstance(kv, PagedSequence) and kv.pool is kvs[0].pool for kv in kvs)
         if paged:                                       # one KV write and one attention dispatch per layer for all

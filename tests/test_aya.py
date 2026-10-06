@@ -234,6 +234,7 @@ class RecordingScheduler:
     """Takes the scheduler's place: records the ids each request would run, then answers "busy" (HTTP 429)."""
     def __init__(self, engine, metrics, **kw):
         self.max_model_len, self.prefill_chunk, self.lock_error, self.submitted = kw["max_model_len"], 512, None, []
+        self.kv_blocks = kw["kv_blocks"]
 
     def submit(self, ids, params, max_new, out=None):
         self.submitted.append(list(ids))
@@ -244,7 +245,8 @@ class RecordingScheduler:
 
 
 app_module.Scheduler = RecordingScheduler
-eng = Engine("tiny-aya-global", None, tok, set(spec["eos"]), aya, spec["sampling"], spec["max_model_len"])
+eng = Engine("tiny-aya-global", None, tok, set(spec["eos"]), aya, spec["sampling"], spec["max_model_len"],
+             kv_blocks=spec["kv_blocks"])
 app = app_module.create_app(eng, max_model_len=10000)
 sched = app.state.scheduler
 
@@ -258,6 +260,9 @@ def chat(*msgs, **extra):
                                                       "max_tokens": 4, **extra}))
 
 check("create_app(max_model_len=10000) gives the scheduler the model's own cap, 8192", sched.max_model_len == 8192)
+check(f"create_app() without kv_blocks gives the scheduler the model's pool ({spec['kv_blocks']} blocks); an explicit "
+      "one wins", app_module.create_app(eng).state.scheduler.kv_blocks == spec["kv_blocks"] == 768
+      and app_module.create_app(eng, kv_blocks=100).state.scheduler.kv_blocks == 100)
 check("create_app() without max_model_len uses the model's own cap; an explicit smaller one still lowers it",
       app_module.create_app(eng).state.scheduler.max_model_len == spec["max_model_len"]
       and app_module.create_app(eng, max_model_len=1000).state.scheduler.max_model_len == 1000)

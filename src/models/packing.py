@@ -8,6 +8,8 @@ from typing import NamedTuple
 
 import torch
 
+from state import to_device
+
 
 class Segment(NamedTuple):
     lo: int              # this sequence's rows in the packed batch: [lo, hi)
@@ -26,7 +28,7 @@ def pack(chunks: list[tuple[torch.Tensor, object]], device) -> tuple[torch.Tenso
         pos.append(torch.arange(start, start + len(ids), dtype=torch.int32))
         lo += len(ids)
     ids = torch.cat([c[0] for c in chunks])
-    return ids, torch.cat(pos).to(device, non_blocking=True), segs
+    return ids, to_device(torch.cat(pos), device), segs
 
 
 def reserve_all(segs: list[Segment]) -> None:
