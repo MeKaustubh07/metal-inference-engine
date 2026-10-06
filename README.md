@@ -198,8 +198,9 @@ scripts/               goldens, bench, quantize, calibrate, serve, loadgen, repl
 
 The engine is being extended to [Tiny Aya Global](https://huggingface.co/CohereLabs/tiny-aya-global) (Cohere2, 3.35B
 parameters, 70 languages): plan in [`docs/tiny-aya-plan.md`](docs/tiny-aya-plan.md), results in
-[`docs/results-log.md`](docs/results-log.md). Tiny Aya is by Cohere and Cohere Labs. Its weights are not part of this
-repository: they are gated on Hugging Face, licensed
+[`docs/results-log.md`](docs/results-log.md). On an 8 GB Mac it serves up to 8,192 tokens in INT4 and 4,096 in
+INT8 (at 8K, INT8 needs more GPU memory than Metal recommends). Tiny Aya is by Cohere and Cohere Labs. Its weights
+are not part of this repository: they are gated on Hugging Face, licensed
 [CC-BY-NC 4.0 with an Acceptable Use Addendum](https://cohere.com/cohere-labs-cc-by-nc-license), subject to the
 [Cohere Labs Acceptable Use Policy](https://docs.cohere.com/docs/cohere-labs-acceptable-use-policy), and provided as
 is, without warranty. This is an independent, non-commercial project, not affiliated with or endorsed by Cohere; sample

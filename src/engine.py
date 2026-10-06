@@ -32,14 +32,16 @@ MODELS = {
     # quantized Metal ones fit in 8 GB (fp32 on the CPU would need 13.4 GB, bf16 on the GPU 6.7 GB). kv_dtype: its KV
     # is 6x Qwen3.5-2B's per token (36 layers x 4 heads x 128), so it is stored in bf16 (the other models keep fp32).
     # kv_blocks: the server's pool, 768 blocks of every layer = 864 MiB of bf16 KV (two 8K sequences, rings counted);
-    # with the INT4 weights 8K prompts then hold 4.45 GiB of GPU memory. With INT8, 5.48 GiB: over the 5.33 GiB Metal
-    # recommends on an 8 GB Mac, where another GPU user can make Metal abort work silently (docs/results-log.md, M5
-    # part C), so long prompts there want INT4.
+    # with the INT4 weights 8K prompts then hold 4.45 GiB of GPU memory. per_backend: what one backend changes. INT8's
+    # weights are 1.2 GB larger, and at 8K it held 5.48 GiB, over the 5.33 GiB Metal recommends on an 8 GB Mac, where
+    # another GPU user can make Metal abort work silently. So INT8 serves at most 4096 tokens from 512 blocks (two 4K
+    # sequences): 4.45 GiB generating, 4.82 scoring /v1/decide options, whose context and fork live outside the pool
+    # (with 768 blocks, 5.21). INT4 /v1/decide at 8K: 5.00 GiB (docs/results-log.md, M5 part C).
     "tiny-aya-global": dict(dir="models/tiny-aya-global", family="cohere2", weights="model.safetensors.index.json",
                             eos=[3, 6, 261001], chat="template", policy="configs/quant/tiny-aya-global.json",
                             sampling=dict(temperature=0.1, top_p=0.95, top_k=50, repetition_penalty=1.0),
                             max_model_len=8192, backends=("metal-int8", "metal-int4"), kv_dtype="bfloat16",
-                            kv_blocks=768),
+                            kv_blocks=768, per_backend={"metal-int8": dict(max_model_len=4096, kv_blocks=512)}),
 }
 FAMILIES = {"qwen3_5": (Qwen35Config, Qwen35Model),          # family -> (config class, model class)
             "cohere2": (Cohere2Config, Cohere2Model)}
@@ -78,7 +80,7 @@ def make_backend(kind: str, policy: str | None):
 
 
 def load_engine(name: str, backend: str = "metal", weights_file: str | None = None) -> Engine:
-    spec = MODELS[name]
+    spec = MODELS[name] | MODELS[name].get("per_backend", {}).get(backend, {})
     d = ROOT / spec["dir"]
     if spec["family"] not in FAMILIES:
         raise NotImplementedError(f"{name}: no model class for family {spec['family']!r} yet")

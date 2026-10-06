@@ -204,12 +204,15 @@ if torch.backends.mps.is_available():                  # what load_engine hands 
     real = engine_module.FAMILIES["cohere2"]
     engine_module.FAMILIES["cohere2"] = (real[0], Recorder)
     try:
-        load_engine("tiny-aya-global", "metal-int8")
+        int8, int4 = (load_engine("tiny-aya-global", b) for b in ("metal-int8", "metal-int4"))
     finally:
         engine_module.FAMILIES["cohere2"] = real
     others = [n for n, s in MODELS.items() if n != "tiny-aya-global" and "kv_dtype" in s]
     check(f"registry: Tiny Aya's KV cache is bf16 (load_engine passes {passed}); the other models keep fp32 "
           f"(no kv_dtype: {others == []})", passed == {"kv_dtype": torch.bfloat16} and others == [])
+    check(f"registry: INT8 serves at most {int8.max_model_len} tokens from {int8.kv_blocks} blocks (at 8K it held 5.48 "
+          f"GiB, over Metal's 5.33 on 8 GB), INT4 {int4.max_model_len} from {int4.kv_blocks}",
+          (int8.max_model_len, int4.max_model_len, int8.kv_blocks, int4.kv_blocks) == (4096, 8192, 512, 768))
 plain = prompt_ids(tok, "", "Is the sky blue?", False, aya)
 chatted = prompt_ids(tok, "", "Is the sky blue?", True, aya)
 opts = [option_ids(tok, o, c) for o in ("Yes", " No") for c in (True, False)]

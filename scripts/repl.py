@@ -32,6 +32,15 @@ def main() -> None:
             break
         history.append({"role": "user", "content": user})
         ids = eng.tokenizer.encode(format_chat(history, style=eng.chat_style, enable_thinking=a.think))
+        limit = eng.max_model_len                          # the model's, or its backend's (Tiny Aya INT8: 4096)
+        if limit and len(ids) + 512 > limit:
+            alone = eng.tokenizer.encode(format_chat(history[-1:], style=eng.chat_style, enable_thinking=a.think))
+            if len(alone) + 512 > limit:                   # too long even alone: refused, the conversation kept
+                print(f"(that message is {len(alone)} tokens; with a reply it passes {limit})")
+                history.pop()
+                continue
+            print(f"(the conversation would pass {limit} tokens with a reply: starting a new one from your message)")
+            history, ids = history[-1:], alone
         print("model> ", end="", flush=True)
         reply = ""
         for piece in generate_stream(eng.model, eng.tokenizer, ids, params, max_new_tokens=512, eos_ids=eng.eos_ids):
