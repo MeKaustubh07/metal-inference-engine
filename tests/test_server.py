@@ -144,6 +144,13 @@ async def api_suite():
               and u["total_tokens"] == u["prompt_tokens"] + 12)
         check("finish_reason is 'length' at max_tokens", rs[2].json()["choices"][0]["finish_reason"] == "length")
 
+        seen, submit = [], sched.submit                        # what an empty request samples with: the model's own
+        sched.submit = lambda ids, params, *a, **k: (seen.append(params), submit(ids, params, *a, **k))[1]
+        r = await c.post("/v1/completions", json={"prompt": PROMPTS[0], "max_tokens": 2})
+        sched.submit = submit
+        check(f"a request that sets no sampling runs with the model's registry values ({eng.sampling})",
+              r.status_code == 200 and seen == [SamplingParams(**eng.sampling)])
+
         r = await c.post("/v1/completions", json={"prompt": PROMPTS[0], "max_tokens": 12, "temperature": 0,
                                                   "repetition_penalty": 1.0, "stream": True})
         chunks, last = sse(r.text)

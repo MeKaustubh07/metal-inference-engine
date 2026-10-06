@@ -293,6 +293,14 @@ The full model in fp32 is 13.4 GB; one layer is 0.31 GB. Both sides run one laye
 | INT8 capped at 4,096 tokens, with a 512-block pool | the registry's `per_backend` gives Tiny Aya INT8 `max_model_len=4096` and `kv_blocks=512` (two 4K sequences; INT4 keeps 8,192 and 768), and `load_engine` merges it over the model's entry; the server and the REPL honor the cap (the REPL starts a new conversation from the latest message when the old one would pass it, and refuses a message too long on its own without dropping the conversation). INT8 at 4K, generating (several runs in one process): 4,853 MiB with 768 blocks, 4,561 with 512. `/v1/decide` at the cap holds the context's cache and one fork outside the pool (the review's catch; the allocator's peak): INT8 4,090 tokens 5.21 GiB with 768 blocks (0.98x Metal's recommended 5.33), 4.82 with 512 (0.90x); INT4 8,180 tokens with 768 blocks 5.00 GiB (0.94x, the narrowest margin of the shipped settings). No aborts in any of these. The model itself still runs past 4096 (`test_aya_long_quant` checks INT8 at 4.8K in a contiguous cache, 4.91 GiB): the cap is a serving limit |
 | the gates that missed it | `test_aya_long_quant` and `test_aya_quant` judged only the bf16-KV run, and the bf16-vs-fp32 change one way, so a broken fp32 run made the change negative and passed (-0.6556). Now every scheme x KV run is gated (the long test's 9 decode steps also on their own), the change both ways, and the long test also gates each run's peak GPU memory (the allocator's own peak) and Metal's aborts (above) |
 
+## Porting Tiny Aya, M6: serving (2026-10-06)
+
+Plan: three independent plans and a judge (workflow wf_9e11ff20-55a), one step per commit.
+
+| step | result |
+|---|---|
+| 1. request sampling from the registry | the server's request fields had Qwen3.5's values as defaults (temperature 0.7, top-p 0.8, top-k 20), so every Tiny Aya request a client sent without them ran at those instead of its card's 0.1 / 0.95 / 50 (and Cohere's language-confusion study ties higher temperature to answers in the wrong language). Now a field left out or sent as null takes the model's own value from the registry, and one the client set is kept; `create_app` refuses a model whose registry entry lacks one; each finished request's log line records what it sampled with. Checks: an empty Tiny Aya request gets 0.1 / 0.95 / 50 / 1.0 (it got 0.7 / 0.8 / 20 before), explicit values (incl. 1.0 and top-k 0) and null behave as described on both endpoints and streaming; for Qwen3.5 the old and new constructors agree on all 81 combinations of fields sent; the live Qwen server samples an empty request with the registry's values |
+
 ## Review workflows run
 
 | week | agents | findings → confirmed | notable |

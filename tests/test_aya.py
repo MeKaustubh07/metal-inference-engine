@@ -223,7 +223,8 @@ check("a raw prompt's ids == HF's default encode (BOS included)",
       tok.encode("The capital of France is", add_bos=True) == hf_tok("The capital of France is")["input_ids"])
 
 # 7. the server, with a stand-in scheduler (no weights needed): the BOS policy per endpoint, the model's length cap,
-# conversations the template refuses, and enable_thinking on a model without a thinking mode
+# conversations the template refuses, enable_thinking on a model without a thinking mode, and the request's sampling:
+# a field the client leaves out (or sends as null) takes the model's own value from the registry
 import asyncio
 
 import httpx
@@ -234,13 +235,14 @@ from server.scheduler import QueueFull
 
 
 class RecordingScheduler:
-    """Takes the scheduler's place: records the ids each request would run, then answers "busy" (HTTP 429)."""
+    """Takes the scheduler's place: records the ids and sampling each request would run, then answers "busy" (429)."""
     def __init__(self, engine, metrics, **kw):
         self.max_model_len, self.prefill_chunk, self.lock_error, self.submitted = kw["max_model_len"], 512, None, []
-        self.kv_blocks = kw["kv_blocks"]
+        self.kv_blocks, self.params = kw["kv_blocks"], []
 
     def submit(self, ids, params, max_new, out=None):
         self.submitted.append(list(ids))
+        self.params.append(params)
         raise QueueFull()
 
     def shutdown(self, timeout):
@@ -283,6 +285,32 @@ code, text = chat((U, "Hi"), enable_thinking=True)
 check("/v1/chat/completions: enable_thinking on a model without a thinking mode -> 400", code == 400 and "thinking" in text)
 code, text = asyncio.run(post("/v1/decide", {"type": "boolean", "question": "Is it?", "context": "word " * 9000}))
 check("/v1/decide: a context past the model's 8192-token cap -> 400", code == 400 and "exceeds 8192" in text)
+
+def sent(path, body):
+    code, text = asyncio.run(post(path, body))
+    p = sched.params[-1]
+    return code, (p.temperature, p.top_p, p.top_k, p.repetition_penalty, p.seed)
+
+card = (0.1, 0.95, 50, 1.0)
+code, got = sent("/v1/completions", {"prompt": "Hi", "max_tokens": 4})
+check(f"sampling: a request that sets none of it gets the model card's {card} ({got[:4]}), seed None",
+      code == 429 and got == card + (None,))
+code, got = sent("/v1/completions", {"prompt": "Hi", "max_tokens": 4, "temperature": 0.7, "seed": 5})
+check(f"sampling: an explicit temperature 0.7 is kept, the rest stay the model's ({got})", got == (0.7, 0.95, 50, 1.0, 5))
+code, got = sent("/v1/chat/completions", {"messages": [{"role": U, "content": "Hi"}], "max_tokens": 4, "stream": True,
+                                          "temperature": 1.0, "top_k": 0})
+check(f"sampling: chat, streaming, an explicit 1.0 and top_k 0 are kept ({got})", got == (1.0, 0.95, 0, 1.0, None))
+code, got = sent("/v1/completions", {"prompt": "Hi", "max_tokens": 4, "temperature": None, "top_p": None})
+check(f"sampling: null takes the model's value ({got})", got == card + (None,))
+code, _ = asyncio.run(post("/v1/completions", {"prompt": "Hi", "max_tokens": 4, "repetition_penalty": 0.9}))
+check("sampling: an out-of-range explicit value is still refused (repetition_penalty 0.9 -> 422)", code == 422)
+check("sampling: the registry's own values are untouched by requests",
+      spec["sampling"] == dict(temperature=0.1, top_p=0.95, top_k=50, repetition_penalty=1.0))
+try:
+    app_module.create_app(Engine("x", None, tok, set(spec["eos"]), aya, {"temperature": 0.1}, 8192, kv_blocks=8))
+    check("sampling: a model whose registry entry lacks a sampling field is refused at create_app", False)
+except ValueError as e:
+    check(f"sampling: a model whose registry entry lacks a sampling field is refused at create_app ({e})", True)
 
 # 8. licence guard: no copy of a gated file, and no copy of the template's text (however it is wrapped), in anything
 # a commit can contain: the working tree and the staged index

@@ -5,8 +5,8 @@ usage: loadgen.py [--url http://127.0.0.1:8000] [--levels 1,2,4,8] [--requests 1
 
 Each client streams a completion, sends the next one as soon as it finishes, and records TTFT (time to the first
 streamed token), TPOT (mean gap between later tokens) and end-to-end latency. Aggregate throughput is total
-generated tokens / wall time (read from the server's own counter). Requests use the API's default sampling
-(temperature 0.7, top-k 20, top-p 0.8, fixed seeds), so the server's per-token sampling cost is included; the
+generated tokens / wall time (read from the server's own counter). Requests set the temperature (default 0.7) and
+a fixed seed and leave top-k / top-p to the model's own values, so the server's per-token sampling cost is included; the
 prompts ask for long answers so most requests run to max_tokens and levels stay comparable.
 """
 import argparse
@@ -104,7 +104,7 @@ async def main():
         print(f"conc {conc}: {r['tok_s']:.1f} tok/s  TTFT p50 {r['ttft50'] * 1e3:.0f} ms  "
               f"TPOT p50 {r['tpot50'] * 1e3:.1f} ms  e2e p50 {r['e2e50']:.2f}s  ({r['ok']} ok, {r['rejected']} rejected)")
     table = [f"Model `{ready['model']}`, backend `{ready['backend']}`, {a.requests} requests per level, "
-             f"max_tokens {a.max_tokens}, temperature {a.temperature} (top-k 20, top-p 0.8), streaming chat "
+             f"max_tokens {a.max_tokens}, temperature {a.temperature} (top-k, top-p: the model's), streaming chat "
              f"completions.\n",
              "| concurrency | throughput (tok/s) | TTFT p50 | TTFT p95 | TPOT p50 | e2e p50 | e2e p95 | rejected |",
              "|---:|---:|---:|---:|---:|---:|---:|---:|"]

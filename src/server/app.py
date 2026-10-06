@@ -6,6 +6,7 @@ balancers should route here), GET /metrics (Prometheus text format).
 """
 import asyncio
 import contextlib
+import dataclasses
 import json
 import logging
 import time
@@ -27,15 +28,16 @@ log = logging.getLogger("engine.server")
 MAX_PROMPT_CHARS = 65536                  # bounds tokenization work per request before the token-length check
 MAX_OPTIONS, MAX_OPTION_CHARS, MAX_OPTION_TOKENS = 16, 1000, 64     # /v1/decide: bounds the forked states' memory
 DISCONNECT_POLL_S = 1.0                   # how often a waiting handler checks whether its client is still there
+SAMPLING_FIELDS = ("temperature", "top_p", "top_k", "repetition_penalty")   # a request's, else the model's
 
 
 class Sampling(BaseModel):
     max_tokens: int | None = Field(None, ge=1, le=4096)
     max_completion_tokens: int | None = Field(None, ge=1, le=4096)   # the newer OpenAI name for max_tokens
-    temperature: float = Field(0.7, ge=0.0, le=2.0)
-    top_p: float = Field(0.8, gt=0.0, le=1.0)
-    top_k: int = Field(20, ge=0)
-    repetition_penalty: float = Field(1.0, ge=1.0, le=2.0)
+    temperature: float | None = Field(None, ge=0.0, le=2.0)   # None (left out or null): the model's own, from the
+    top_p: float | None = Field(None, gt=0.0, le=1.0)          # registry (Tiny Aya's card 0.1 / 0.95 / 50, Qwen3.5's
+    top_k: int | None = Field(None, ge=0)                      # 0.7 / 0.8 / 20)
+    repetition_penalty: float | None = Field(None, ge=1.0, le=2.0)
     seed: int | None = None
     stop: str | list[str] | None = None
     n: int = Field(1, ge=1, le=1)          # one choice per request
@@ -43,6 +45,11 @@ class Sampling(BaseModel):
 
     def limit(self, default: int) -> int:
         return self.max_completion_tokens or self.max_tokens or default
+
+    def sampling(self, model: SamplingParams) -> SamplingParams:
+        """What this request samples with: each field it set, the model's for the rest."""
+        sent = {k: v for k in SAMPLING_FIELDS if (v := getattr(self, k)) is not None}
+        return dataclasses.replace(model, **sent, seed=self.seed)
 
     def stops(self) -> list[str]:
         stops = [self.stop] if isinstance(self.stop, str) else (self.stop or [])
@@ -130,6 +137,9 @@ def create_app(engine, max_batch: int = 8, max_waiting: int = 64, kv_blocks: int
                max_model_len: int | None = None, drain_timeout: float = 2.0, prefill_chunk: int = 512,
                batch_wait_ms: float = 5.0, lock_weights: bool = False) -> FastAPI:
     kv_blocks = kv_blocks or getattr(engine, "kv_blocks", None) or 1024   # default: the model's pool (else 1024)
+    if missing := sorted(set(SAMPLING_FIELDS) - set(engine.sampling)):  # no silent fallback to another model's values
+        raise ValueError(f"{engine.name}: the registry's sampling lacks {missing}")
+    model_sampling = SamplingParams(**engine.sampling)
     cap = getattr(engine, "max_model_len", None)
     if max_model_len is None:                           # default: the model's own limit (else 4096)
         max_model_len = cap or 4096
@@ -165,8 +175,7 @@ def create_app(engine, max_batch: int = 8, max_waiting: int = 64, kv_blocks: int
 
     async def submit(prompt: str, body: Sampling, default_max: int, add_bos: bool):
         ids = await asyncio.to_thread(engine.tokenizer.encode, prompt, add_bos)   # CPU work off the event loop
-        params = SamplingParams(temperature=body.temperature, top_k=body.top_k, top_p=body.top_p,
-                                repetition_penalty=body.repetition_penalty, seed=body.seed)
+        params = body.sampling(model_sampling)
         try:
             return sched.submit(ids, params, body.limit(default_max), out=AsyncSink()), len(ids)
         except QueueFull:
@@ -281,7 +290,9 @@ def create_app(engine, max_batch: int = 8, max_waiting: int = 64, kv_blocks: int
         log.info(json.dumps({"event": "request_finished", "id": req.id, "prompt_tokens": n_prompt,
                              "completion_tokens": len(req.generated), "finish_reason": reason,
                              "ttft_s": round(ttft, 4) if ttft else None,
-                             "latency_s": round(time.perf_counter() - req.arrived, 4)}))
+                             "latency_s": round(time.perf_counter() - req.arrived, 4),
+                             "temperature": req.params.temperature, "top_p": req.params.top_p,
+                             "top_k": req.params.top_k}))
 
     @app.post("/v1/completions")
     async def completions(body: CompletionBody, http: HTTPRequest):

@@ -157,5 +157,26 @@ check("real reply stream == decode(generated ids)", reply == eng.tokenizer.decod
 check("real reply mentions Paris", "Paris" in reply)
 del eng; gc.collect()
 
+# 9. request sampling (M6): a field the client did not send now takes the model's registry value instead of a default
+# hard-coded in the server. For Qwen3.5 the two are equal, so every request must sample exactly as before: the old
+# constructor (kept here as the oracle) against the new one, for every subset of the four fields, each at 2 values
+import itertools
+
+from engine import MODELS
+from server.app import Sampling
+
+OLD_DEFAULTS = dict(temperature=0.7, top_p=0.8, top_k=20, repetition_penalty=1.0)   # the server's fields until M6
+VALUES = dict(temperature=(0.0, 1.3), top_p=(0.5, 1.0), top_k=(0, 40), repetition_penalty=(1.0, 1.2))
+for name in ("qwen3.5-0.8b", "qwen3.5-2b"):
+    model = SamplingParams(**MODELS[name]["sampling"])
+    cases = same = 0
+    for k in range(5):
+        for fields in itertools.combinations(VALUES, k):
+            for vals in itertools.product(*(VALUES[f] for f in fields)):
+                sent = dict(zip(fields, vals))
+                old = SamplingParams(**{**OLD_DEFAULTS, **sent}, seed=7)
+                cases, same = cases + 1, same + (Sampling(**sent, seed=7).sampling(model) == old)
+    check(f"{name}: every request samples as before M6 ({same}/{cases} subsets of fields sent)", same == cases == 81)
+
 print(f"\n{sum(results)}/{len(results)} checks passed")
 sys.exit(0 if all(results) else 1)
