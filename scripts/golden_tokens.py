@@ -47,6 +47,9 @@ random.seed(1)
 digits = "0123456789٠١٢٣٤٥٦٧٨٩०१२३४५६७८९０１２ ,.ab_\n"
 for _ in range(100):
     cases.append("".join(random.choice(digits) for _ in range(random.randint(1, 40))))
+# where the merge table is not monotone (a merge ranked before the merge that makes one of its parts), the order in
+# which pairs merge decides the answer: Qwen3.5 has 27 such merges, and these two words hit one (M6)
+cases += ["いっぱいっぱい", "もういっぱいっぱいです"]
 
 out = []
 for c in cases:

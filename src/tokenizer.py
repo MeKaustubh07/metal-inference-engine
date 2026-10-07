@@ -4,6 +4,7 @@ Pipeline (encode):  special-token split -> normalize (if the file asks) -> regex
                     -> stand-in chars -> BPE merges by priority -> vocab lookup [-> BOS in front, if asked].
 Decode runs the BPE steps backwards.
 """
+import heapq
 import json
 import unicodedata
 from pathlib import Path
@@ -150,27 +151,34 @@ class Tokenizer:
 
     # ---------- Stage 3: BPE merging for ONE chunk ----------
     def _bpe(self, chunk: str) -> list[str]:
-        symbols = list(chunk)                                  # start as single stand-in characters
-        while len(symbols) > 1:
-            # find the adjacent pair with the best (lowest) merge rank
-            best, best_rank = None, None
-            for pair in zip(symbols, symbols[1:]):
-                r = self.merge_rank.get(pair)
-                if r is not None and (best_rank is None or r < best_rank):
-                    best, best_rank = pair, r
-            if best is None:
-                break                                          # nothing left to merge
-            # glue every occurrence of that pair
-            merged, out, i = best[0] + best[1], [], 0
-            while i < len(symbols):
-                if i < len(symbols) - 1 and (symbols[i], symbols[i + 1]) == best:
-                    out.append(merged)
-                    i += 2
-                else:
-                    out.append(symbols[i])
-                    i += 1
-            symbols = out
-        return symbols
+        """Merge a chunk's characters as HF tokenizers does (merge_all in its BPE model): a min-heap of adjacent
+        pairs keyed by (merge rank, position) over a doubly linked list of symbols, so a long chunk costs n log n,
+        not n^2 (an unspaced CJK text is one chunk). Each pair is merged where it was found, one occurrence at a
+        time: a lower-ranked pair formed by a merge goes before the remaining occurrences of the current one. A
+        queued pair is skipped when its left symbol was absorbed, has no right neighbour, or no longer forms the
+        token it was queued for; like HF, it is the token that is compared, not the rank."""
+        sym: list[str | None] = list(chunk)
+        n = len(sym)
+        if n < 2:
+            return sym
+        nxt, prv, rank = list(range(1, n + 1)), list(range(-1, n - 1)), self.merge_rank
+        nxt[-1] = -1
+        heap = [(r, i, sym[i] + sym[i + 1]) for i in range(n - 1) if (r := rank.get((sym[i], sym[i + 1]))) is not None]
+        heapq.heapify(heap)
+        while heap:
+            _, i, token = heapq.heappop(heap)
+            j = nxt[i]
+            if sym[i] is None or j == -1 or sym[i] + sym[j] != token or (sym[i], sym[j]) not in rank:
+                continue                                       # stale: the pair it was queued for is gone
+            sym[i], sym[j] = token, None                       # the right symbol is absorbed into the left
+            k = nxt[i] = nxt[j]
+            if k != -1:
+                prv[k] = i
+            if (p := prv[i]) != -1 and (r := rank.get((sym[p], token))) is not None:
+                heapq.heappush(heap, (r, p, sym[p] + token))   # the new pair on the left
+            if k != -1 and (r := rank.get((token, sym[k]))) is not None:
+                heapq.heappush(heap, (r, i, token + sym[k]))   # and on the right
+        return [s for s in sym if s is not None]
 
     # ---------- Encode: text -> ids ----------
     def encode(self, text: str, add_bos: bool = False) -> list[int]:

@@ -45,7 +45,7 @@ against Hugging Face `transformers`.
 |---|---|---|
 | loader | `src/weight_loader.py` | parse the safetensors header, mmap the file, hand out zero-copy bf16 tensor views; a sharded checkpoint through its `model.safetensors.index.json` |
 | config | `src/config.py` | `Qwen35Config`, `Cohere2Config` (refuses settings the engine does not implement) |
-| tokenizer | `src/tokenizer.py` | byte-level BPE from `tokenizer.json` (GPT-2 byte alphabet, merge ranks, special tokens first, NFC if the file asks, every regex Split, BOS from the post-processor) |
+| tokenizer | `src/tokenizer.py` | byte-level BPE from `tokenizer.json` (GPT-2 byte alphabet, merge ranks, special tokens first, NFC if the file asks, every regex Split, BOS from the post-processor); merges as HF tokenizers does them, a heap of pairs by rank and position, n log n per word |
 | chat template | `src/chat.py` | Qwen3.5 ChatML incl. thinking-mode rules; or the model's own Jinja template, rendered as transformers renders it (Tiny Aya) |
 | model | `src/models/qwen3_5.py` | hybrid layers, fused projections, partial RoPE, output gate, DeltaNet prefill and decode |
 | model | `src/models/cohere2.py` | Tiny Aya: all-attention layers, LayerNorm feeding attention and MLP in parallel, interleaved RoPE (by reordering q/k rows at load) on sliding layers only, a 4096-token sliding window on 27 of 36 layers (they read only their window's suffix of the KV cache), logit scale, bf16 KV |
