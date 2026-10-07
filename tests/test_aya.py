@@ -213,6 +213,9 @@ if torch.backends.mps.is_available():                  # what load_engine hands 
     check(f"registry: INT8 serves at most {int8.max_model_len} tokens from {int8.kv_blocks} blocks (at 8K it held 5.48 "
           f"GiB, over Metal's 5.33 on 8 GB), INT4 {int4.max_model_len} from {int4.kv_blocks}",
           (int8.max_model_len, int4.max_model_len, int8.kv_blocks, int4.kv_blocks) == (4096, 8192, 512, 768))
+    check(f"registry: INT4 /v1/decide takes at most {int4.decide_max_len} tokens (at 8K it peaked at 4.99 GiB, 0.94x "
+          f"Metal's recommended), INT8's stays its {int8.max_model_len} cap",
+          (int4.decide_max_len, int8.decide_max_len) == (6144, None))
 plain = prompt_ids(tok, "", "Is the sky blue?", False, aya)
 chatted = prompt_ids(tok, "", "Is the sky blue?", True, aya)
 opts = [option_ids(tok, o, c) for o in ("Yes", " No") for c in (True, False)]
@@ -238,11 +241,15 @@ class RecordingScheduler:
     """Takes the scheduler's place: records the ids and sampling each request would run, then answers "busy" (429)."""
     def __init__(self, engine, metrics, **kw):
         self.max_model_len, self.prefill_chunk, self.lock_error, self.submitted = kw["max_model_len"], 512, None, []
-        self.kv_blocks, self.params = kw["kv_blocks"], []
+        self.kv_blocks, self.params, self.max_new = kw["kv_blocks"], [], []
 
     def submit(self, ids, params, max_new, out=None):
         self.submitted.append(list(ids))
         self.params.append(params)
+        self.max_new.append(max_new)
+        raise QueueFull()
+
+    def run_job(self, fn):
         raise QueueFull()
 
     def shutdown(self, timeout):
@@ -285,6 +292,33 @@ code, text = chat((U, "Hi"), enable_thinking=True)
 check("/v1/chat/completions: enable_thinking on a model without a thinking mode -> 400", code == 400 and "thinking" in text)
 code, text = asyncio.run(post("/v1/decide", {"type": "boolean", "question": "Is it?", "context": "word " * 9000}))
 check("/v1/decide: a context past the model's 8192-token cap -> 400", code == 400 and "exceeds 8192" in text)
+base_app, app = app, app_module.create_app(Engine("tiny-aya-global", None, tok, set(spec["eos"]), aya,
+                                                   spec["sampling"], spec["max_model_len"], kv_blocks=spec["kv_blocks"],
+                                                   decide_max_len=6144))
+long = asyncio.run(post("/v1/decide", {"type": "boolean", "question": "Is it?", "context": "word " * 6500}))
+short = asyncio.run(post("/v1/decide", {"type": "boolean", "question": "Is it?", "context": "word " * 5000}))
+check(f"/v1/decide on a backend with a smaller decide limit (INT4: 6144): ~6.5K tokens -> 400, ~5K -> on to the "
+      f"scheduler ({long[0]}, {short[0]})", long[0] == 400 and "exceeds 6144" in long[1] and short[0] == 429)
+app = base_app                                         # the rest of section 7 records on the first app's scheduler
+
+# a request that sets no max_tokens gets the endpoint's default, but never more than the length cap leaves: a long
+# prompt is not refused for a reply length the client never asked for (an explicit max_tokens is still held to it)
+small = app_module.create_app(eng, max_model_len=300)
+sched300 = small.state.scheduler
+async def post300(path, body):
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=small), base_url="http://t") as c:
+        return (await c.post(path, json=body)).status_code
+text = "word " * 280
+n = len(tok.encode(text, add_bos=True))
+asyncio.run(post300("/v1/completions", {"prompt": text}))
+unset_long = sched300.max_new[-1]
+asyncio.run(post300("/v1/completions", {"prompt": "Hi"}))
+unset_short = sched300.max_new[-1]
+asyncio.run(post300("/v1/completions", {"prompt": "Hi", "max_tokens": 200}))
+explicit = sched300.max_new[-1]
+check(f"max_tokens unset: a {n}-token prompt under a 300 cap gets the {300 - n} tokens left, not the default 128 "
+      f"({unset_long}); a short prompt keeps 128 ({unset_short}); an explicit 200 is passed on as asked ({explicit})",
+      0 < 300 - n < 128 and unset_long == 300 - n and unset_short == 128 and explicit == 200)
 
 def sent(path, body):
     code, text = asyncio.run(post(path, body))
@@ -296,7 +330,8 @@ code, got = sent("/v1/completions", {"prompt": "Hi", "max_tokens": 4})
 check(f"sampling: a request that sets none of it gets the model card's {card} ({got[:4]}), seed None",
       code == 429 and got == card + (None,))
 code, got = sent("/v1/completions", {"prompt": "Hi", "max_tokens": 4, "temperature": 0.7, "seed": 5})
-check(f"sampling: an explicit temperature 0.7 is kept, the rest stay the model's ({got})", got == (0.7, 0.95, 50, 1.0, 5))
+check(f"sampling: an explicit temperature 0.7 is kept, the rest stay the model's ({got})",
+      got == (0.7, 0.95, 50, 1.0, 5))
 code, got = sent("/v1/chat/completions", {"messages": [{"role": U, "content": "Hi"}], "max_tokens": 4, "stream": True,
                                           "temperature": 1.0, "top_k": 0})
 check(f"sampling: chat, streaming, an explicit 1.0 and top_k 0 are kept ({got})", got == (1.0, 0.95, 0, 1.0, None))

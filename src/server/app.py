@@ -43,8 +43,10 @@ class Sampling(BaseModel):
     n: int = Field(1, ge=1, le=1)          # one choice per request
     stream: bool = False
 
-    def limit(self, default: int) -> int:
-        return self.max_completion_tokens or self.max_tokens or default
+    def limit(self, default: int, room: int) -> int:
+        """The reply's token budget: the client's max_tokens if it set one (the length check holds the request to
+        it), else the endpoint's default, but no more than the room the length cap leaves after the prompt."""
+        return self.max_completion_tokens or self.max_tokens or max(1, min(default, room))
 
     def sampling(self, model: SamplingParams) -> SamplingParams:
         """What this request samples with: each field it set, the model's for the rest."""
@@ -146,6 +148,8 @@ def create_app(engine, max_batch: int = 8, max_waiting: int = 64, kv_blocks: int
     elif cap and max_model_len > cap:                   # a model's own limit wins (registry and model)
         log.info(f"max_model_len {max_model_len} -> {cap}, {engine.name}'s limit")
         max_model_len = cap
+    # /v1/decide prefills its context into a cache of its own, outside the pool: a backend may allow it less
+    decide_len = min(max_model_len, getattr(engine, "decide_max_len", None) or max_model_len)
     metrics = Metrics()
     sched = Scheduler(engine, metrics, max_batch=max_batch, max_waiting=max_waiting, kv_blocks=kv_blocks,
                       max_model_len=max_model_len, prefill_chunk=prefill_chunk, batch_wait_ms=batch_wait_ms,
@@ -177,7 +181,8 @@ def create_app(engine, max_batch: int = 8, max_waiting: int = 64, kv_blocks: int
         ids = await asyncio.to_thread(engine.tokenizer.encode, prompt, add_bos)   # CPU work off the event loop
         params = body.sampling(model_sampling)
         try:
-            return sched.submit(ids, params, body.limit(default_max), out=AsyncSink()), len(ids)
+            limit = body.limit(default_max, max_model_len - len(ids))
+            return sched.submit(ids, params, limit, out=AsyncSink()), len(ids)
         except QueueFull:
             raise HTTPException(429, "server is at capacity; retry with backoff", headers={"Retry-After": "1"})
         except ValueError as e:
@@ -333,8 +338,9 @@ def create_app(engine, max_batch: int = 8, max_waiting: int = 64, kv_blocks: int
             raise HTTPException(400, str(e))
         if max(map(len, opt_ids)) > MAX_OPTION_TOKENS:
             raise HTTPException(400, f"an option exceeds {MAX_OPTION_TOKENS} tokens")
-        if len(ctx) + max(map(len, opt_ids)) > max_model_len:
-            raise HTTPException(400, f"prompt ({len(ctx)} tokens) + longest option exceeds {max_model_len}")
+        if len(ctx) + max(map(len, opt_ids)) > decide_len:
+            raise HTTPException(400, f"prompt ({len(ctx)} tokens) + longest option exceeds {decide_len}"
+                                     + (" (/v1/decide's limit on this backend)" if decide_len < max_model_len else ""))
         try:                                              # stepwise on the engine thread: decode keeps going
             fut = sched.run_job(lambda: decision.score_steps(engine, body.type, options, ctx, opt_ids,
                                                              body.length_normalize, body.embeddings,

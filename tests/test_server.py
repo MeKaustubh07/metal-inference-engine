@@ -220,6 +220,11 @@ async def api_suite():
               codes == [400, 400, 422])
         r = await c.post("/v1/completions", json={"prompt": "word " * 250, "max_tokens": 50})
         check("prompt + max_tokens over max_model_len -> 400", r.status_code == 400)
+        room = 256 - len(tok.encode("word " * 240))                 # the same request with no max_tokens: the
+        r = await c.post("/v1/completions", json={"prompt": "word " * 240, "temperature": 0})   # default reply is cut
+        made = r.json()["usage"]["completion_tokens"] if r.status_code == 200 else None    # to the room left
+        check(f"no max_tokens and a prompt that leaves {room} tokens of room: 200, at most {room} made ({made})",
+              0 < room < 128 and r.status_code == 200 and 0 < made <= room)
 
         seeded = {"prompt": PROMPTS[3], "max_tokens": 12, "temperature": 0.9, "seed": 1234}
         a, b = await asyncio.gather(c.post("/v1/completions", json=seeded), c.post("/v1/completions", json=seeded))

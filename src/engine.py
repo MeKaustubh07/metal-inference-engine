@@ -35,13 +35,16 @@ MODELS = {
     # with the INT4 weights 8K prompts then hold 4.45 GiB of GPU memory. per_backend: what one backend changes. INT8's
     # weights are 1.2 GB larger, and at 8K it held 5.48 GiB, over the 5.33 GiB Metal recommends on an 8 GB Mac, where
     # another GPU user can make Metal abort work silently. So INT8 serves at most 4096 tokens from 512 blocks (two 4K
-    # sequences): 4.45 GiB generating, 4.82 scoring /v1/decide options, whose context and fork live outside the pool
-    # (with 768 blocks, 5.21). INT4 /v1/decide at 8K: 5.00 GiB (docs/results-log.md, M5 part C).
+    # sequences): 4.45 GiB generating, 4.82 scoring /v1/decide options, whose context lives outside the pool
+    # (with 768 blocks, 5.21). INT4 /v1/decide holds its context outside the pool, and the prefill of an 8K one peaks
+    # at 4.99 GiB, so INT4 decides take at most 6144 tokens (4.60 GiB); generation keeps 8192 (docs/results-log.md, M5
+    # part C and M6).
     "tiny-aya-global": dict(dir="models/tiny-aya-global", family="cohere2", weights="model.safetensors.index.json",
                             eos=[3, 6, 261001], chat="template", policy="configs/quant/tiny-aya-global.json",
                             sampling=dict(temperature=0.1, top_p=0.95, top_k=50, repetition_penalty=1.0),
                             max_model_len=8192, backends=("metal-int8", "metal-int4"), kv_dtype="bfloat16",
-                            kv_blocks=768, per_backend={"metal-int8": dict(max_model_len=4096, kv_blocks=512)}),
+                            kv_blocks=768, per_backend={"metal-int8": dict(max_model_len=4096, kv_blocks=512),
+                                                         "metal-int4": dict(decide_max_len=6144)}),
 }
 FAMILIES = {"qwen3_5": (Qwen35Config, Qwen35Model),          # family -> (config class, model class)
             "cohere2": (Cohere2Config, Cohere2Model)}
@@ -58,6 +61,7 @@ class Engine:
     max_model_len: int | None = None           # a model's hard cap on prompt + generated tokens (None: no cap)
     thinking: bool = False                     # the model has a reasoning mode (Qwen3.5: <think> ... </think>)
     kv_blocks: int | None = None               # the server's default KV pool, in blocks of every layer (None: 1024)
+    decide_max_len: int | None = None          # /v1/decide's limit on context + option, if below max_model_len
 
 
 def chat_style(spec: dict, d: Path) -> str | TemplateChat:
@@ -99,4 +103,5 @@ def load_engine(name: str, backend: str = "metal", weights_file: str | None = No
     model = model_cls(cfg, weights, be, **({"kv_dtype": getattr(torch, spec["kv_dtype"])} if "kv_dtype" in spec else {}))
     caps = [c for c in (spec.get("max_model_len"), getattr(model, "max_positions", None)) if c]
     return Engine(name, model, tok, set(spec["eos"]), chat_style(spec, d), spec["sampling"],
-                  min(caps) if caps else None, spec.get("thinking", False), spec.get("kv_blocks"))
+                  min(caps) if caps else None, spec.get("thinking", False), spec.get("kv_blocks"),
+                  spec.get("decide_max_len"))
