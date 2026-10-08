@@ -1,7 +1,10 @@
 """Week 15: serving. Batched decode == sequential decode for the hybrid Qwen3.5 model (fp32 CPU, exact greedy), sequences
 joining/leaving mid-batch, batched quantized kernels == per-row kernels, Metal batched decode within bf16 noise,
 preemption-by-recompute, and the HTTP API: completions, chat, SSE streaming, 429 backpressure, validation,
-metrics, cancellation, seeded sampling and graceful drain."""
+metrics, cancellation, seeded sampling and graceful drain.
+
+--target tiny serves a small random Cohere2 instead (tests/serving_targets.py; its sliding-window rings wrap over
+HTTP): the Metal sections (Qwen3.5-0.8B on the GPU) print N/A there."""
 import asyncio
 import gc
 import json
@@ -20,15 +23,13 @@ from server.app import OutputFilter, create_app
 from server.metrics import Metrics
 from server.scheduler import Scheduler
 from server.scheduler import QueueFull, Request
+from serving_targets import PROMPTS, load_target, na, target_from_argv, unload_target
 
 results = []
 def check(name, ok):
     results.append(bool(ok)); print(f"{'PASS' if ok else 'FAIL'}  {name}")
 
 GREEDY = SamplingParams(temperature=0, repetition_penalty=1.0)
-PROMPTS = ["The capital of France is", "def fibonacci(n):",
-           "The history of computing is a story of abstraction. Each generation of engineers built tools that",
-           "Hello world"]
 HINDI = "नमस्ते दुनिया, यह एक परीक्षण है।"      # multi-byte text; Qwen3.5 has a token per character here, so the UTF-8
                                                 # holdback is checked separately by feeding the detokenizer a split emoji
 
@@ -72,32 +73,34 @@ def batched(model, V, prompts, n, join_at):
 
 
 # ---------------------------------------------------------------- 1. batched == sequential (fp32 CPU, exact)
-name = "qwen3.5-0.8b"
-eng = load_engine(name, "cpu")                      # the one fp32 model in RAM, reused by the HTTP suites below
+TARGET = target_from_argv()
+T = load_target(TARGET)                             # qwen (default): Qwen3.5-0.8B; tiny: a random Cohere2; fp32 CPU
+name, eng, raw = T.name, T.engine, T.raw_ids        # the one fp32 model in RAM, reused by the HTTP suites below
 V, N = eng.tokenizer.vocab_size(), 10
-ids = [eng.tokenizer.encode(p) for p in PROMPTS[:3]]
+ids = [raw(p) for p in PROMPTS[:3]]                 # as the server encodes a raw prompt (BOS first, if any)
 ref = [sequential(eng.model, V, x, N) for x in ids]
 got, logs, pool = batched(eng.model, V, ids, N, join_at=[0, 0, 3])    # third joins mid-flight
 check(f"{name}: batched greedy == sequential for 3 prompts (one joins at step 3)",
       all(got[j] == ref[j][0] for j in range(3)))
 diff = max((a - b).abs().max().item() for j in range(3) for a, b in zip(logs[j], ref[j][1]))
-check(f"{name}: batched logits == sequential logits (max|diff| {diff:.1e} < 2e-3)", diff < 2e-3)
+tol = f"{T.logit_tol:.0e}".replace("e-0", "e-")                     # 2e-3
+check(f"{name}: batched logits == sequential logits (max|diff| {diff:.1e} < {tol})", diff < T.logit_tol)
 check(f"{name}: every KV block and DeltaNet state slot returned to the pool after sequences leave",
       pool.allocator.num_free == pool.allocator.num_blocks and len(pool.free_seqs) == 8)
-cpu_eng = eng
 
 # ---------------------------------------------------------------- 2a. output filter (reasoning split, stop strings)
-f = OutputFilter(True, [])
+f = OutputFilter(True, [])                          # the server's filter on fixed text: any target runs these
 got = f.feed("Let me think") + f.feed(" about it.</think>\n\nThe answer") + f.feed(" is 4.") + f.flush()
 check("thinking mode: text before </think> is reasoning, after it content",
-      got == [("reasoning", "Let me think"), ("reasoning", " about it."), ("content", "The answer"), ("content", " is 4.")])
+         got == [("reasoning", "Let me think"), ("reasoning", " about it."), ("content", "The answer"),
+                 ("content", " is 4.")])
 f = OutputFilter(True, [])
 got = f.feed("ok</think>") + f.feed("\n") + f.feed("\nAnswer\n") + f.flush()
 check("newlines after </think> are dropped even when they arrive in later pieces",
-      got == [("reasoning", "ok"), ("content", "Answer\n")])
+         got == [("reasoning", "ok"), ("content", "Answer\n")])
 f = OutputFilter(True, [])
 check("thinking mode cut off by max_tokens: everything is reasoning, no content",
-      f.feed("still thinking") + f.flush() == [("reasoning", "still thinking")])
+         f.feed("still thinking") + f.flush() == [("reasoning", "still thinking")])
 f = OutputFilter(False, ["END", "\n\n"])
 got = f.feed("abc E") + f.feed("N") + f.feed("D tail")
 check("stop string split across pieces: content cut before it, nothing after", "".join(t for _, t in got) == "abc "
@@ -106,14 +109,20 @@ f = OutputFilter(False, ["END"])
 check("held-back tail that never becomes a stop string is flushed",
       "".join(t for _, t in f.feed("abcEN") + f.flush()) == "abcEN" and not f.stopped)
 
-# ---------------------------------------------------------------- 2. HTTP API over the scheduler (fp32 CPU qwen3.5-0.8b)
-eng = cpu_eng
+# ---------------------------------------------------------------- 2. HTTP API over the scheduler (the target, fp32 CPU)
 V, tok = eng.tokenizer.vocab_size(), eng.tokenizer
 EOS = set(eng.eos_ids)
 
 
-def ref_text(prompt, n):
-    return tok.decode(sequential(eng.model, V, tok.encode(prompt), n, EOS)[0])
+def ref_text(prompt, n, chat=False):
+    """Greedy text alone: a raw prompt as /v1/completions encodes it (BOS first, if the model has one); a chat prompt
+    as /v1/chat/completions does (the template writes its own BOS)."""
+    return tok.decode(sequential(eng.model, V, tok.encode(prompt) if chat else raw(prompt), n, EOS)[0])
+
+
+def words(n):
+    """'word ' repeated to about n tokens (Qwen3.5: 'word ' * n, one token each; tiny: three each)."""
+    return "word " * (n // (len(tok.encode("word word ")) - len(tok.encode("word "))))
 
 
 def sse(body: str):
@@ -122,8 +131,9 @@ def sse(body: str):
 
 
 async def api_suite():
-    app = create_app(eng, max_batch=4, max_waiting=8, kv_blocks=128, max_model_len=256)
+    app = create_app(eng, max_batch=4, max_waiting=8, kv_blocks=128, max_model_len=256, prefill_chunk=T.prefill_chunk)
     sched = app.state.scheduler
+    T.slow_steps(sched)                                           # streams stay in flight (cancel, shared steps)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t", timeout=300) as c:
         r1, r2 = await c.get("/health"), await c.get("/ready")
         check("/health and /ready return 200", r1.status_code == 200 and r2.status_code == 200)
@@ -140,7 +150,7 @@ async def api_suite():
         check(f"they really shared decode steps (mean decode batch {mean_batch:.2f} > 1.5)", mean_batch > 1.5)
         u = rs[1].json()["usage"]
         check("usage counts prompt and completion tokens",
-              u["prompt_tokens"] == len(tok.encode(PROMPTS[1])) and u["completion_tokens"] == 12
+              u["prompt_tokens"] == len(raw(PROMPTS[1])) and u["completion_tokens"] == 12
               and u["total_tokens"] == u["prompt_tokens"] + 12)
         check("finish_reason is 'length' at max_tokens", rs[2].json()["choices"][0]["finish_reason"] == "length")
 
@@ -165,7 +175,7 @@ async def api_suite():
         body = r.json()
         prompt = format_chat(msgs, style=eng.chat_style)
         check("chat completion == sequential greedy on the chat-formatted prompt; role assistant",
-              body["choices"][0]["message"] == {"role": "assistant", "content": ref_text(prompt, 16)}
+              body["choices"][0]["message"] == {"role": "assistant", "content": ref_text(prompt, 16, chat=True)}
               and body["usage"]["prompt_tokens"] == len(tok.encode(prompt)))
         r = await c.post("/v1/chat/completions", json={"messages": msgs, "max_tokens": 16, "temperature": 0,
                                                        "repetition_penalty": 1.0, "stream": True})
@@ -179,9 +189,11 @@ async def api_suite():
         rn = await c.post("/v1/completions", json={"prompt": HINDI, "max_tokens": 16, **greedy})
         rs_ = await c.post("/v1/completions", json={"prompt": HINDI, "max_tokens": 16, "stream": True, **greedy})
         streamed = "".join(ch["choices"][0]["text"] for ch in sse(rs_.text)[0])
-        ref = ref_text(HINDI, 16)
-        check(f"Hindi (multi-byte) stream == non-stream == sequential, no U+FFFD: {ref!r}",
-              streamed == rn.json()["choices"][0]["text"] == ref and "\ufffd" not in streamed)
+        ref = ref_text(HINDI, 16)                           # a trained model writes whole characters; a random one
+        check(f"Hindi (multi-byte) stream == non-stream == sequential{', no U+FFFD' if T.real else ''}: {ref!r}",
+              streamed == rn.json()["choices"][0]["text"] == ref and ("\ufffd" not in streamed or not T.real))
+        if not T.real:                                      # stray bytes, U+FFFD in its own decode too
+            na("Hindi reply has no U+FFFD (whole characters: a trained model's)")
 
         ref = ref_text(PROMPTS[1], 20)
         stop = ref[5:8]
@@ -218,10 +230,10 @@ async def api_suite():
                                    headers={"content-type": "application/json"})).status_code)
         check(f"system message not first / no user message -> 400; lone surrogate -> 422, not a crash ({codes})",
               codes == [400, 400, 422])
-        r = await c.post("/v1/completions", json={"prompt": "word " * 250, "max_tokens": 50})
+        r = await c.post("/v1/completions", json={"prompt": words(250), "max_tokens": 50})   # fits; 50 more do not
         check("prompt + max_tokens over max_model_len -> 400", r.status_code == 400)
-        room = 256 - len(tok.encode("word " * 240))                 # the same request with no max_tokens: the
-        r = await c.post("/v1/completions", json={"prompt": "word " * 240, "temperature": 0})   # default reply is cut
+        room = 256 - len(raw(words(240)))                           # the same request with no max_tokens: the
+        r = await c.post("/v1/completions", json={"prompt": words(240), "temperature": 0})     # default reply is cut
         made = r.json()["usage"]["completion_tokens"] if r.status_code == 200 else None    # to the room left
         check(f"no max_tokens and a prompt that leaves {room} tokens of room: 200, at most {room} made ({made})",
               0 < room < 128 and r.status_code == 200 and 0 < made <= room)
@@ -238,7 +250,7 @@ async def api_suite():
                                    "engine_request_latency_seconds_sum"]))
 
     # cancellation: tokens stop, blocks come back
-    req = sched.submit(tok.encode(PROMPTS[0]), GREEDY, 200)
+    req = sched.submit(raw(PROMPTS[0]), GREEDY, 200)
     kind, _ = req.out.get(timeout=120)
     sched.cancel(req)
     while True:
@@ -247,17 +259,17 @@ async def api_suite():
             break
     time.sleep(0.2)
     check("cancel stops generation early and frees its KV blocks and state slot",
-          payload == "cancelled" and len(req.generated) < 200 and sched.pool.allocator.num_free == 128
-          and len(sched.pool.free_seqs) == 4)
+          payload == "cancelled" and len(req.generated) < 200
+          and sched.pool.allocator.num_free == sched.pool.allocator.num_blocks and len(sched.pool.free_seqs) == 4)
 
     # graceful drain: in-flight request finishes, new ones are refused
-    req = sched.submit(tok.encode(PROMPTS[1]), GREEDY, 10)
+    req = sched.submit(raw(PROMPTS[1]), GREEDY, 10)
     sched.shutdown(drain_timeout=120)
     items = []
     while not req.out.empty():
         items.append(req.out.get())
     try:
-        sched.submit(tok.encode("x"), GREEDY, 4); refused = False
+        sched.submit(raw("x"), GREEDY, 4); refused = False
     except QueueFull:
         refused = True
     check("graceful shutdown drains the in-flight request, then refuses new ones and reports not-ready",
@@ -276,7 +288,8 @@ async def api_suite():
 
 
 async def backpressure_suite():
-    app = create_app(eng, max_batch=1, max_waiting=1, kv_blocks=64, max_model_len=256)
+    app = create_app(eng, max_batch=1, max_waiting=1, kv_blocks=64, max_model_len=256, prefill_chunk=T.prefill_chunk)
+    T.slow_steps(app.state.scheduler)                        # the running request still holds the slot when others come
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t", timeout=300) as c:
         rs = await asyncio.gather(*[c.post("/v1/completions", json={"prompt": PROMPTS[0], "max_tokens": 24,
                                                                      "temperature": 0}) for _ in range(6)])
@@ -287,12 +300,12 @@ async def backpressure_suite():
         m = (await c.get("/metrics")).text
         check("rejections are counted in metrics", f"engine_requests_rejected_total {len(rejected)}" in m)
     sched = app.state.scheduler
-    running = sched.submit(tok.encode(PROMPTS[2]), GREEDY, 60)
+    running = sched.submit(raw(PROMPTS[2]), GREEDY, 60)
     running.out.get(timeout=120)                             # it holds the only batch slot
-    queued = sched.submit(tok.encode(PROMPTS[0]), GREEDY, 8)  # fills the only queue slot
+    queued = sched.submit(raw(PROMPTS[0]), GREEDY, 8)        # fills the only queue slot
     sched.cancel(queued)
     try:
-        sched.submit(tok.encode(PROMPTS[1]), GREEDY, 8); room = True
+        sched.submit(raw(PROMPTS[1]), GREEDY, 8); room = True
     except QueueFull:
         room = False
     check("cancelling a queued request frees its queue slot at once (no 429 for the next client)",
@@ -301,9 +314,14 @@ async def backpressure_suite():
 
 
 async def preemption_suite():
-    # 3 sequences x (prompt + 30 tokens) need 3 + 3 + 2 blocks (block 16) = 8 > 6: the pool runs dry mid-generation
-    app = create_app(eng, max_batch=4, max_waiting=8, kv_blocks=6, max_model_len=96)
+    # 3 sequences x (prompt + 30 tokens) need 3 + 3 + 2 blocks (block 16) = 8 > 6: the pool runs dry mid-generation.
+    # In the pool's units (tiny: 9 + 9 + 9, rings of 2; a block of every layer is 4 units), 2 short, in whole blocks
     prompts = [PROMPTS[0], PROMPTS[1], PROMPTS[3]]
+    probe = eng.model.new_paged_pool(1, 16, max_seqs=1, max_chunk=T.prefill_chunk)   # one block of every layer
+    need = sum(probe.blocks_for(len(raw(p)) + 30) for p in prompts)
+    app = create_app(eng, max_batch=4, max_waiting=8, kv_blocks=(need - 2) // probe.allocator.num_blocks,
+                     max_model_len=96, prefill_chunk=T.prefill_chunk)
+    del probe
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t", timeout=300) as c:
         rs = await asyncio.gather(*[c.post("/v1/completions", json={"prompt": p, "max_tokens": 30, "temperature": 0,
                                                                      "repetition_penalty": 1.0}) for p in prompts])
@@ -312,8 +330,9 @@ async def preemption_suite():
     n_pre = int(float(pre[0].split()[-1])) if pre else 0
     check(f"KV pool exhaustion preempts ({n_pre} preemptions) and recomputes: outputs still == sequential greedy",
           n_pre >= 1 and [r.json()["choices"][0]["text"] for r in rs] == [ref_text(p, 30) for p in prompts])
+    pool = app.state.scheduler.pool
     check("all KV blocks and state slots free after preempted requests finish",
-          app.state.scheduler.pool.allocator.num_free == 6 and len(app.state.scheduler.pool.free_seqs) == 4)
+          pool.allocator.num_free == pool.allocator.num_blocks and len(pool.free_seqs) == 4)
     app.state.scheduler.shutdown(5)
 
 
@@ -327,8 +346,9 @@ def uvicorn_suite():
     grab = logging.Handler(); grab.emit = lambda rec: logged.append(rec.getMessage())
     logging.getLogger("engine.server").addHandler(grab); logging.getLogger("engine.server").setLevel(logging.INFO)
     sock = socket.socket(); sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]; sock.close()
-    app = create_app(eng, max_batch=2, max_waiting=4, kv_blocks=64, max_model_len=512)
+    app = create_app(eng, max_batch=2, max_waiting=4, kv_blocks=64, max_model_len=512, prefill_chunk=T.prefill_chunk)
     sched = app.state.scheduler
+    T.slow_steps(sched)                                           # tokens are still coming when the client gives up
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning",
                                            timeout_graceful_shutdown=5))
     th = threading.Thread(target=server.run, daemon=True); th.start()
@@ -354,8 +374,8 @@ def uvicorn_suite():
         time.sleep(0.1)
     made = sched.metrics.counters["generation_tokens_total"] - before
     check(f"real uvicorn: a non-streaming request whose client gave up is cancelled ({made} of 400 tokens made), "
-          f"blocks and state slot freed", not sched.active and made < 400 and sched.pool.allocator.num_free == 64
-          and len(sched.pool.free_seqs) == 2)
+          f"blocks and state slot freed", not sched.active and made < 400
+          and sched.pool.allocator.num_free == sched.pool.allocator.num_blocks and len(sched.pool.free_seqs) == 2)
     last = json.loads([m for m in logged if '"request_finished"' in m][-1])
     check(f"its request_finished log line says finish_reason {last['finish_reason']!r} (the engine stops it one step "
           f"after the handler logs)", last["finish_reason"] == "cancelled" and last["completion_tokens"] < 400)
@@ -376,9 +396,9 @@ def uvicorn_suite():
     def held():
         entered.set(); gate.wait(30); orig()
     sched._decode_step = held
-    first = sched.submit(eng.tokenizer.encode(PROMPTS[0]), GREEDY, 3)
+    first = sched.submit(raw(PROMPTS[0]), GREEDY, 3)
     entered.wait(30)                                              # first is running; the engine is held mid-step
-    second = sched.submit(eng.tokenizer.encode(PROMPTS[1]), GREEDY, 3)
+    second = sched.submit(raw(PROMPTS[1]), GREEDY, 3)
     scraped = {l.split()[0]: float(l.split()[1]) for l in httpx.get(f"{url}/metrics").text.splitlines()
                if l.startswith(("engine_waiting_requests ", "engine_running_requests "))}
     sched._decode_step = orig; gate.set()
@@ -398,8 +418,16 @@ asyncio.run(api_suite())
 asyncio.run(backpressure_suite())
 asyncio.run(preemption_suite())
 uvicorn_suite()
-del eng, cpu_eng
-gc.collect()
+del eng, T, raw                                # the Metal sections load Qwen on the GPU: free the CPU model first
+check("the CPU target's model is freed before the Metal sections", unload_target(TARGET))
+if TARGET != "qwen":                           # the Metal sections load Qwen3.5-0.8B on the GPU: beside its target only
+    for s in ("bf16", "int8", "int4"):
+        na(f"batched {s} matvec (M=2,3,8,13,32; with/without bias and residual) == per-row kernel == dense")
+    for b in ("metal", "metal-int4"):
+        na(f"qwen3.5-0.8b {b}: decode_batch (B up to 4, one joins late) greedy == single-sequence greedy")
+    na("scheduler over a HybridPool on Metal INT4: outputs == decoding alone, all KV blocks and state slots returned")
+    print(f"\n{sum(results)}/{len(results)} passed")
+    sys.exit(0 if all(results) else 1)
 
 # ---------------------------------------------------------------- 3. Metal: batched quantized kernels, batched decode
 from backend.metal import MetalBackend
@@ -446,8 +474,8 @@ for name, backend in [("qwen3.5-0.8b", "metal"), ("qwen3.5-0.8b", "metal-int4")]
         c_ = sched.metrics.counters
         check(f"scheduler over a HybridPool on Metal INT4: {c_['requests_preempted_total']} preemptions, outputs == "
               f"decoding alone, all KV blocks and state slots returned",
-              c_["requests_preempted_total"] >= 1 and texts == want and sched.pool.allocator.num_free == 7
-              and len(sched.pool.free_seqs) == 3)
+              c_["requests_preempted_total"] >= 1 and texts == want
+              and sched.pool.allocator.num_free == sched.pool.allocator.num_blocks and len(sched.pool.free_seqs) == 3)
         sched.shutdown(5)
     del eng
     gc.collect(); torch.mps.empty_cache()

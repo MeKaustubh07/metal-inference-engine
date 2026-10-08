@@ -19,11 +19,12 @@ def rel(a, b):
     return ((a - b).abs().max() / b.abs().max()).item()
 
 
-def build(tmp: str, window: int, seed: int = 0, eps: float = 1e-5, tied: bool = True, max_pos: int = 8192):
+def build(tmp: str, window: int, seed: int = 0, eps: float = 1e-5, tied: bool = True, max_pos: int = 8192,
+          vocab_size: int = 512):
     """A random 8-layer Cohere2 (sliding, sliding, sliding, full, x2) with 8 query heads per 2 KV heads of 16 dims,
     saved and loaded by HF and by the engine."""
     torch.manual_seed(seed)
-    hc = HFConfig(vocab_size=512, hidden_size=128, intermediate_size=320, num_hidden_layers=8, num_attention_heads=8,
+    hc = HFConfig(vocab_size=vocab_size, hidden_size=128, intermediate_size=320, num_hidden_layers=8, num_attention_heads=8,
                   num_key_value_heads=2, max_position_embeddings=max_pos, layer_norm_eps=eps, logit_scale=0.25,
                   sliding_window=window, rope_parameters={"rope_type": "default", "rope_theta": 50000.0},
                   tie_word_embeddings=tied, initializer_range=0.3, pad_token_id=0, bos_token_id=1, eos_token_id=2)

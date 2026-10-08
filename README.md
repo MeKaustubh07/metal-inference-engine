@@ -141,9 +141,11 @@ Then:
 scripts/.venv/bin/python scripts/run_tests.py
 ```
 
-`--quick` skips the cache, quantization, Qwen3.5, Tiny Aya model / long / quant, serving, prefill and decision suites
-(it runs tokenizer, aya, cohere2, window, sampling, paged, kernels and native). The 19 suites cover the tokenizer (both
-models vs HF),
+`--quick` skips the cache, quantization, Qwen3.5, Tiny Aya model / long / quant suites and the serving, prefill and
+decision suites on their real model (it runs tokenizer, aya, cohere2, window, sampling, paged, kernels and native, and
+the serving, prefill and decision suites on a tiny target: a random Cohere2 with a sliding window of 8, a tokenizer
+trained at test time and a chat template of its own, `--target tiny`, see `tests/serving_targets.py`). The 19 suites
+cover the tokenizer (both models vs HF, the BPE merge vs HF on synthetic tables),
 Tiny Aya's files (config, sharded weights, chat template, registry, server routing), the Cohere2 model vs HF on small
 random models (every layer, greedy, caches, batching, bf16 KV, the length cap, a decode step reading its token id when called on Metal), the sliding window (exhaustively vs a
 float64 oracle, the model vs HF past the window on every path, the sliding layers' per-sequence ring of blocks with every slot reused and poisoned, the scheduler on it with preemption) and the real 3.35B Tiny Aya in fp32
