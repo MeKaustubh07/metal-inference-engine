@@ -6,11 +6,19 @@
         here at test time (BOS from its post-processor, as Tiny Aya's), and a chat template of its own with a preamble
         of 76 tokens: exact (fp32 on the CPU) and fast, but random, so checks of meaning do not apply. Served
         with prefill chunks of 8, its rings hold 2 blocks, so every request past 32 tokens wraps its ring over HTTP.
+  aya-int4, aya-int8  Tiny Aya Global on Metal, INT4 or INT8 weights (models/tiny-aya-global/model.<scheme>.qt) and
+        bf16 KV: real but not exact. A batch of 2 or more rows takes the batched INT4/INT8 matvec, which dequantizes
+        in another order than the one-row kernel (about 1e-7 relative on one linear, about 1e-2 on the logits after
+        36 layers; one sequence alone, paged or contiguous, is bit-identical), so served greedy runs are compared
+        token by token under the near-tie rule (Target.agree), and checks of meaning are reported, not gated, except
+        Paris and decision 0 (D10). Each suite also gates peak GPU memory and Metal aborts (gpu_gates). SKIP without
+        a Metal GPU or the model's files. One target per process: the suites' Qwen Metal sections are N/A beside it.
 
 A check that does not apply to a target prints "N/A" (run_tests.py counts SKIP lines as missing files)."""
 import argparse
 import gc
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -39,6 +47,52 @@ class Target:
     prefill_chunk: int = 512          # what server apps built by the suites use
     step_delay: float = 0.0           # seconds added to every decode step, for tests that need a stream in flight
     keep: list = field(default_factory=list)   # objects that must outlive the target (its temp directory)
+    started: str = ""                 # local time just before the model loaded: Metal aborts are counted from it
+    gate_meaning: bool = True         # checks of meaning gate; False: reported only (a quantized model, D10)
+
+    @property
+    def gpu(self) -> bool:
+        return self.engine.model.b.device.type == "mps"
+
+    @property
+    def tie(self) -> float:
+        """A served token other than the reference's pick is a near-tie when the reference ranks it less than this
+        below its pick: two runs whose logits differ by at most logit_tol can order such a pair either way (D9)."""
+        return 2 * self.logit_tol
+
+    def agree(self, ref, got: list[int], finish: str | None = None, what: str = "") -> bool:
+        """Served greedy ids `got` == a sequential reference ref = (tokens, logits rows), which has one more row than
+        tokens when it stopped on an end token, for the same max_tokens. Exact targets: equal ids. The others (D9):
+        equal ids (a cancelled request may stop short of the reference), or a near-tie at the first difference, where
+        the reference ranks the served token (an end token if the request stopped there: finish 'stop') less than
+        `tie` below its own pick; later tokens follow different contexts and are not compared. Each near-tie,
+        divergence or wrong length is noted on the next check's label (notes())."""
+        toks, logs = ref
+        if self.exact:
+            return list(got) == list(toks)
+        end = object()
+        r_seq = list(toks) + ([end] if len(logs) > len(toks) else [])
+        s_seq = list(got) + ([end] if finish == "stop" else [])
+        k = next((i for i, (a, b) in enumerate(zip(r_seq, s_seq)) if a != b), None)
+        if k is None:                              # one is a prefix of the other: only a cancel may stop short
+            if len(s_seq) == len(r_seq) or finish == "cancelled" and len(s_seq) < len(r_seq):
+                return True
+            _notes.append(f"; {what + ': ' if what else ''}{len(got)} tokens ({finish}), the reference {len(toks)}")
+            return False
+        row, eos = logs[k], sorted(self.engine.eos_ids)
+        def logit(t):
+            return row[eos].max().item() if t is end else row[t].item()
+        gap = logit(r_seq[k]) - logit(s_seq[k])
+        _notes.append(f"; {what + ': ' if what else ''}{'near-tie' if gap < self.tie else 'diverged'} at token {k} "
+                      f"({gap:.1e} below the reference's pick, {'<' if gap < self.tie else '>='} {self.tie:.0e})")
+        return gap < self.tie
+
+    def tidy(self) -> None:
+        """Between sub-suites on a GPU target: free the apps, schedulers and pools they built (memory is gated)."""
+        if self.gpu:
+            release_apps()
+            gc.collect()
+            torch.mps.empty_cache()
 
     def raw_ids(self, text: str) -> list[int]:
         """A raw prompt's ids as /v1/completions builds them: BOS first, if the model has one."""
@@ -62,6 +116,116 @@ class Target:
 
 def na(name: str) -> None:
     print(f"N/A   {name}")
+
+
+_notes: list[str] = []
+
+
+def notes() -> str:
+    """The notes of the comparisons since the last call (near-ties, divergences), for a check's label. Empty on exact
+    targets, so their output is unchanged."""
+    s = "".join(_notes)
+    _notes.clear()
+    return s
+
+
+def report(name: str, ok: bool) -> None:
+    """A check of meaning on a quantized model (D10): printed, not gated (run_tests.py counts PASS, FAIL, SKIP and the
+    not-applicable mark anywhere in a line, so a report says neither)."""
+    print(f"INFO  {name}: {'holds' if ok else 'does not hold'} (reported, not gated)")
+
+
+def agree_selfcheck() -> bool:
+    """The near-tie rule on made-up logits over 5 ids, end token 3: what it accepts and what it refuses."""
+    from types import SimpleNamespace
+    t = Target("made-up", SimpleNamespace(eos_ids={3}), exact=False, real=False, thinking=False, logit_tol=1e-2,
+               logprob_tol=0.0)
+    def rows(*steps):                              # per step: (the pick, a runner-up, how far below the pick it is)
+        out = []
+        for top, second, gap in steps:
+            r = torch.zeros(5)
+            r[top], r[second] = 1.0, 1.0 - gap
+            out.append(r)
+        return out
+    ref = ([1, 2], rows((1, 4, 0.5), (2, 4, 0.01)))
+    stops = ([1], rows((1, 4, 0.5), (3, 2, 0.01)))              # the reference ends at step 1 (id 2 close behind)
+    ends_close = ([1, 2], rows((1, 3, 0.01), (2, 4, 0.5)))      # the end token 0.01 below at step 0
+    ok = [t.agree(ref, [1, 2]), t.agree(ref, [1], "cancelled"), t.agree(ref, [1, 4]), not t.agree(ref, [4, 2]),
+          not t.agree(ref, [1, 0]), t.agree(stops, [1], "stop"), t.agree(stops, [1, 2], "length"),
+          not t.agree(stops, [1, 4], "length"), t.agree(ends_close, [], "stop"), not t.agree(ref, [], "stop"),
+          not t.agree(ref, [1], "length"), not t.agree(ref, [1, 2, 0], "length"),
+          not t.agree(ref, [1, 2, 0], "cancelled"),
+          not Target("exact", t.engine, True, False, False, 1e-2, 0.0).agree(ref, [1, 4])]
+    _notes.clear()
+    return all(ok)
+
+
+class Served:
+    """Records the Requests a scheduler is given, so a check can read the ids it generated (HTTP returns text)."""
+
+    def __init__(self, sched):
+        self.reqs, submit = [], sched.submit
+        def recording(ids, *a, **k):
+            req = submit(ids, *a, **k)
+            self.reqs.append(req)
+            return req
+        sched.submit = recording
+
+    def last(self, ids: list[int]):
+        """The latest request with these prompt ids."""
+        return next(r for r in reversed(self.reqs) if r.prompt_ids == list(ids))
+
+
+def release_apps() -> None:
+    """Drop FastAPI's references to every endpoint create_app made: module-level lru_caches in
+    fastapi.dependencies.models keep the endpoint functions, and those hold their scheduler, its pool and the engine."""
+    try:
+        import fastapi.dependencies.models as fm
+    except ImportError:
+        return
+    for f in vars(fm).values():
+        if callable(getattr(f, "cache_clear", None)):
+            f.cache_clear()
+
+
+def gpu_peak() -> int:
+    """This process's GPU memory high point: the allocator's peak heap bytes, plus what Metal holds outside them now
+    (as tests/test_aya_long_quant.py measures it)."""
+    torch.mps.synchronize()
+    A = torch.accelerator
+    return A.max_memory_reserved() + max(0, torch.mps.driver_allocated_memory() - A.memory_reserved())
+
+
+ABORT = "Execution of the command buffer was aborted"
+
+
+def metal_aborts(since: str) -> tuple[bool, str]:
+    """Whether Metal aborted none of this process's command buffers since `since` (local time), read from macOS's
+    log: PyTorch 2.14 never reads a command buffer's status, so an out-of-memory abort is otherwise silent.
+    -> (none aborted, what the log said)"""
+    try:
+        log = subprocess.run(["/usr/bin/log", "show", "--start", since, "--style", "compact", "--predicate",
+                              f'processID == {os.getpid()} AND eventMessage CONTAINS "{ABORT}"'],
+                             capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        return False, "macOS's log not readable: log show timed out after 300 s"
+    if log.returncode != 0:                                  # it needs an admin account and no sandbox
+        return False, f"macOS's log not readable (log show: {log.returncode}, {log.stderr.strip()[:150]})"
+    aborts = [line.split(ABORT)[-1].strip() for line in log.stdout.splitlines() if ABORT in line]
+    return not aborts, f"macOS log: {len(aborts)}" + (f", e.g. {aborts[0][:90]}" if aborts else "")
+
+
+def gpu_gates(t: Target, check) -> None:
+    """On a GPU target, two gates over the whole suite: peak GPU memory at most 0.95 x what Metal recommends (where
+    MLX starts freeing its cache), and no command buffer aborted by Metal. Nothing on a CPU target. Call it while the
+    target is loaded."""
+    if not t.gpu:
+        return
+    peak, rec = gpu_peak(), torch.mps.recommended_max_memory()
+    check(f"GPU memory: peak {peak / 2**30:.2f} GiB <= 0.95 x the {rec / 2**30:.2f} GiB Metal recommends",
+          peak <= 0.95 * rec)
+    ok, what = metal_aborts(t.started)
+    check(f"Metal aborted no command buffer of this process ({what})", ok)
 
 
 # ---------------------------------------------------------------- tiny: tokenizer, template, model
@@ -175,8 +339,27 @@ def load_target(name: str) -> Target:
                 raise RuntimeError(f"the tiny target is unusable with seed {TINY_SEED}: {problems}")
             t = Target("tiny-cohere2", eng, exact=True, real=False, thinking=False, logit_tol=2e-3,
                        logprob_tol=2e-4, prefill_chunk=8, step_delay=0.01, keep=[tmp])
+        elif name in ("aya-int4", "aya-int8"):
+            scheme, d = name[4:], "models/tiny-aya-global"
+            qt = f"{d}/model.{scheme}.qt"
+            need = [qt] + [f"{d}/{f}" for f in ("config.json", "tokenizer.json", "tokenizer_config.json")]
+            if not torch.backends.mps.is_available() or not all(map(os.path.exists, need)):
+                policy = " --policy configs/quant/tiny-aya-global.json" if scheme == "int4" else ""
+                print(f"SKIP: the {name} target needs a Metal GPU, the gated files in {d} and {qt} (scripts/"
+                      f"quantize.py {d}/model.safetensors.index.json {qt} --scheme {scheme}{policy})")
+                sys.exit(0)
+            from quant import QtFile
+            if (held := QtFile(qt).scheme) != scheme:
+                raise RuntimeError(f"{qt} holds {held} weights, not {scheme}")
+            torch.set_grad_enabled(False)
+            started = time.strftime("%Y-%m-%d %H:%M:%S")     # before the backend's first GPU work (shader compiles)
+            # tolerances: about twice the largest difference measured (2026-10-08): logits 1.4e-2 (batched decode, INT4;
+            # INT8 1.1e-2; a pack through the GEMM 9.3e-3), decision scores 6.8e-3 (a 428-token context in 4-token chunks)
+            t = Target(f"tiny-aya-global {scheme}", load_engine("tiny-aya-global", f"metal-{scheme}", qt),
+                       exact=False, real=True, thinking=False, logit_tol=3e-2, logprob_tol=2e-2, started=started,
+                       gate_meaning=False)
         else:
-            raise ValueError(f"unknown target {name!r} (qwen, tiny)")
+            raise ValueError(f"unknown target {name!r} (qwen, tiny, aya-int4, aya-int8)")
         _cache[name] = t
         return t
 
@@ -190,24 +373,20 @@ def unload_target(name: str) -> bool:
         t = _cache.pop(name, None)
     if t is None:
         return True
-    model = weakref.ref(t.engine.model)
+    model, gpu = weakref.ref(t.engine.model), t.gpu
     del t
-    try:
-        import fastapi.dependencies.models as fm
-        for f in vars(fm).values():
-            if callable(getattr(f, "cache_clear", None)):
-                f.cache_clear()
-    except ImportError:
-        pass
+    release_apps()
     gc.collect()
+    if gpu:
+        torch.mps.empty_cache()
     return model() is None
 
 
 def target_from_argv(default: str = "qwen") -> str:
-    """--target qwen|tiny (or --target=tiny); anything else on the command line is an error, so a mistyped flag cannot
-    fall back to the qwen target and its Metal sections."""
+    """--target qwen|tiny|aya-int4|aya-int8 (or --target=tiny); anything else on the command line is an error, so a
+    mistyped flag cannot fall back to the qwen target and its Metal sections."""
     p = argparse.ArgumentParser(description="a server suite (tests/serving_targets.py)")
-    p.add_argument("--target", choices=("qwen", "tiny"), default=default)
+    p.add_argument("--target", choices=("qwen", "tiny", "aya-int4", "aya-int8"), default=default)
     return p.parse_args().target
 
 

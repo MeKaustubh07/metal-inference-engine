@@ -4,8 +4,10 @@ embeddings (exactly), options are complete answers, the context is prefilled in 
 stepwise between decode steps and drops cancelled ones, and the choice / boolean / score modes and the endpoint
 behave.
 
---target qwen (default) or tiny (tests/serving_targets.py): on a random model the checks of meaning (Paris, 7 + 3,
-review scores, yes / no answers) print N/A, and so does the Metal section (it loads Qwen on the GPU)."""
+--target qwen (default), tiny, aya-int4 or aya-int8 (tests/serving_targets.py): on a random model the checks of
+meaning (Paris, 7 + 3, review scores, yes / no answers) print N/A, and so does the Metal section (it loads Qwen on the
+GPU; N/A beside Tiny Aya too). On aya-int4 / aya-int8 they are reported, not gated, except Paris and decision 0, and
+the tolerances are the target's (D10)."""
 import asyncio
 import gc
 import math
@@ -24,17 +26,18 @@ from sampler import SamplingParams
 from server.app import create_app
 from server.metrics import Metrics
 from server.scheduler import QueueFull, Scheduler
-from serving_targets import load_target, na, target_from_argv, unload_target
+from serving_targets import gpu_gates, load_target, na, notes, report, target_from_argv, unload_target
 from state import ContiguousKVCache
 
 torch.set_grad_enabled(False)
 results = []
 def check(name, ok):
-    results.append(bool(ok)); print(f"{'PASS' if ok else 'FAIL'}  {name}")
+    results.append(bool(ok)); print(f"{'PASS' if ok else 'FAIL'}  {name}{notes()}")
 
 TARGET = target_from_argv()
-T = load_target(TARGET)                                # the engine every section below serves (fp32 on the CPU)
-TOL = T.logprob_tol                                    # scores vs references; printed as written: 2e-4
+T = load_target(TARGET)                                # the engine every section below serves (CPU fp32, or Metal)
+meaning = check if T.gate_meaning else report          # checks of meaning: gated, or reported on a quantized model
+TOL = T.logprob_tol                                    # scores vs references; printed as written (qwen 2e-4)
 TOL_TEXT = f"{TOL:.0e}".replace("e-0", "e-")
 QUESTION = "What is the capital of France? Answer with the city name."
 OPTIONS = ["Paris", "Lyon", "Marseille is the capital", "Nice"]        # single- and multi-token options
@@ -145,20 +148,20 @@ with tempfile.TemporaryDirectory() as tmp:
               f"state with no fork == from their own forks (bit-exact), and the context left as its prefill left it "
               f"({sum(a and b for a, b in runs)}/{len(runs)})", all(a and b for a, b in runs))
 
-# ---------------------------------------------------------------- the target, CPU fp32 (exact)
+# ---------------------------------------------------------------- the target: CPU fp32 (exact), or Tiny Aya on Metal
 eng = T.engine
 core(eng, TOL)
 from decision import decide
 if T.real:                                                       # checks of meaning: a trained model's answers
     yes = decide(eng, "boolean", "", "Is Paris the capital of France?")
     no = decide(eng, "boolean", "", "Is Lyon the capital of France?")
-    check(f"boolean: Paris is the capital -> {yes['decision']} (P(yes) {yes['probability']:.2f}); Lyon -> "
-          f"{no['decision']} (P(yes) {no['probability']:.2f})", yes["decision"] is True and no["decision"] is False)
+    meaning(f"boolean: Paris is the capital -> {yes['decision']} (P(yes) {yes['probability']:.2f}); Lyon -> "
+            f"{no['decision']} (P(yes) {no['probability']:.2f})", yes["decision"] is True and no["decision"] is False)
     labels = ["Very negative", "Negative", "Neutral", "Positive", "Very positive"]
     pos = decide(eng, "score", "", "How positive is this review: 'an absolute delight, I loved every minute'?", labels)
     neg = decide(eng, "score", "", "How positive is this review: 'a dull, painful waste of two hours'?", labels)
-    check(f"score: a glowing review rates {pos['expected']:.2f}, a scathing one {neg['expected']:.2f} (0-4 scale)",
-          pos["expected"] > 2.5 > neg["expected"])
+    meaning(f"score: a glowing review rates {pos['expected']:.2f}, a scathing one {neg['expected']:.2f} (0-4 scale)",
+            pos["expected"] > 2.5 > neg["expected"])
 else:
     na("boolean: Paris is the capital -> True; Lyon -> False")
     na("score: a glowing review rates above 2.5, a scathing one below (0-4 scale)")
@@ -201,8 +204,8 @@ check(f"forked scores with the boundary term == one-sequence reference, max |d| 
 if T.real:
     r = decide(eng, "choice", "", "What is 7 + 3? Answer with the number only.", ["1", "10", "7"])
     p1, p10 = math.exp(r["options"][0]["logprob"]), math.exp(r["options"][1]["logprob"])
-    check(f"'10' is not swallowed by its prefix '1': 7 + 3 -> {['1', '10', '7'][r['decision']]!r} "
-          f"(P('1' as a word) {p1:.3f}, P('10') {p10:.3f}, disjoint: sum <= 1)", r["decision"] == 1 and p1 + p10 <= 1)
+    meaning(f"'10' is not swallowed by its prefix '1': 7 + 3 -> {['1', '10', '7'][r['decision']]!r} "
+            f"(P('1' as a word) {p1:.3f}, P('10') {p10:.3f}, disjoint: sum <= 1)", r["decision"] == 1 and p1 + p10 <= 1)
 else:
     na("'10' is not swallowed by its prefix '1': 7 + 3 -> '10'")
 
@@ -217,21 +220,22 @@ check(f"a {len(ctx)}-token context prefilled in 4-token chunks scores like one p
 
 # on the server: a decision runs stepwise (one context chunk per engine step) while a stream keeps generating; a
 # cancelled queued decision never runs; queued decisions count against readiness. Chunks of 16, the scheduler's and
-# the decision's alike (the check counts them); the target's step delay keeps a fast model's stream running meanwhile
+# the decision's alike (the check counts them); the target's step delay keeps a fast model's stream running meanwhile.
+# The whole-run reference is computed first, before any engine thread runs: one thread uses the model at a time
 GREEDY = SamplingParams(temperature=0, repetition_penalty=1.0)
+opts, ctx2, opt_ids = prepare(eng, "choice", "Inference engines turn trained weights into answers. " * 8,
+                              "What is this text about?", ["Computing", "Cooking"])
+whole = score(eng, "choice", opts, ctx2, opt_ids, chunk=16)
 s = Scheduler(eng, Metrics(), max_batch=2, max_waiting=2, kv_blocks=64, prefill_chunk=16)
 T.slow_steps(s)
 stream = s.submit(T.raw_ids("The history of computing is"), GREEDY, 400)
 stream.out.get(timeout=120)                                      # it is decoding now
-opts, ctx2, opt_ids = prepare(eng, "choice", "Inference engines turn trained weights into answers. " * 8,
-                              "What is this text about?", ["Computing", "Cooking"])
 n0 = len(stream.generated)
 res = s.run_job(lambda: score_steps(eng, "choice", opts, ctx2, opt_ids, chunk=16)).result(timeout=600)
 during = len(stream.generated) - n0
 chunks = -(-len(ctx2) // 16)
 check(f"a decision over a {len(ctx2)}-token context ran in {chunks} chunks while a stream generated {during} tokens, "
-      f"and gives the same result as running it whole",
-      during >= chunks - 1 and res == score(eng, "choice", opts, ctx2, opt_ids, chunk=16))
+      f"and gives the same result as running it whole", during >= chunks - 1 and res == whole)
 s.cancel(stream)
 gate, ran = threading.Event(), []
 first = s.run_job(lambda: gate.wait(30))                         # holds the engine thread
@@ -249,6 +253,8 @@ later.result(timeout=30)
 check(f"a cancelled queued decision never runs ({ran}); with 2 queued, /ready is false and a third is turned away",
       ran == ["later"] and busy and full)
 s.shutdown(5)
+del s
+T.tidy()                                                         # GPU targets: free its pool before the next section
 
 
 async def http_suite():
@@ -270,9 +276,11 @@ async def http_suite():
                                               "embeddings": True})
         jb = rb.json()
         check(f"/v1/decide boolean with embeddings: {jb['decision']}, one {len(jb['options'][0]['embedding'])}-dim "
-              f"embedding per option", rb.status_code == 200
-              and (jb["decision"] is True if T.real else isinstance(jb["decision"], bool))
+              f"embedding per option", rb.status_code == 200 and isinstance(jb["decision"], bool)
+              and (jb["decision"] is True or not (T.real and T.gate_meaning))
               and len(jb["options"][0]["embedding"]) == eng.model.config.hidden_size)
+        if T.real and not T.gate_meaning:                        # yes is meaning: reported on a quantized model
+            report(f"/v1/decide boolean: Paris is the capital -> {jb['decision']}", jb["decision"] is True)
         codes = [(await c.post("/v1/decide", json=b)).status_code for b in (
             {"type": "pick", "question": "q", "options": ["a", "b"]},              # unknown type
             {"type": "choice", "question": "q", "options": ["a"]},                 # one option
@@ -288,8 +296,12 @@ async def http_suite():
 
 
 asyncio.run(http_suite())
-del eng, T, s                                                    # the Metal section loads Qwen on the GPU
-check("the CPU target's model is freed before the Metal section", unload_target(TARGET))
+T.tidy()                                                         # GPU targets: free the app's scheduler and pool
+gpu_gates(T, check)                                              # GPU targets: peak memory, Metal aborts
+freed = "the GPU target's model is freed and the MPS cache emptied" if T.gpu else \
+    "the CPU target's model is freed before the Metal section"
+del eng, T                                                       # the Metal section loads Qwen on the GPU
+check(freed, unload_target(TARGET))
 
 # ---------------------------------------------------------------- Metal INT4: the same properties within INT4/bf16 noise
 if TARGET != "qwen":                                             # this section serves Qwen on the GPU
