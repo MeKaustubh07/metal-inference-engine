@@ -46,10 +46,11 @@ class Metrics:
                          "requests_finished_total": 0, "prompt_tokens_total": 0, "generation_tokens_total": 0,
                          "decode_steps_total": 0, "decode_sequences_total": 0,   # ratio = mean decode batch size
                          "prefill_steps_total": 0, "prefill_tokens_total": 0,   # ratio = mean packed prefill size
-                         "decisions_total": 0, "jobs_rejected_total": 0}          # /v1/decide answered / turned away
+                         "decisions_total": 0, "jobs_rejected_total": 0,          # /v1/decide answered / turned away
+                         "prefix_hits_total": 0, "prefix_bypasses_total": 0}      # pinned preamble (prefix.py)
         self.gauges = {"running_requests": 0, "prefilling_requests": 0, "waiting_requests": 0, "kv_blocks_free": 0,
                        "kv_blocks_total": 0, "kv_unit_bytes": 0, "kv_bytes_held": 0, "weights_locked_bytes": 0,
-                       "waiting_jobs": 0}
+                       "waiting_jobs": 0, "prefix_pinned_units": 0}
         self.ttft = Histogram("engine_time_to_first_token_seconds", "Time from arrival to the first generated token",
                               self.lock)
         self.tpot = Histogram("engine_time_per_output_token_seconds", "Time between consecutive generated tokens",

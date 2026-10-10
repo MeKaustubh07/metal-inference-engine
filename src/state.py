@@ -271,6 +271,7 @@ class WindowedSequence:
         self.tables: list[list[int]] = [[] for _ in range(pool.n_groups)]
         self.tags: list[list[int]] = [[] for _ in range(pool.n_groups)]   # sliding: logical block in each slot
         self.length = 0
+        self.shared = 0                    # blocks 0 .. shared-1 of every group are a pinned prefix's (borrow)
 
     @property
     def block_table(self) -> list[int]:
@@ -298,10 +299,22 @@ class WindowedSequence:
                 self.tables[g].append(p.allocator.allocate())
                 self.tags[g].append(-1)
 
+    def borrow(self, pin: "WindowedSequence", n: int) -> None:
+        """Start this empty sequence from the first n blocks of `pin` (same pool, rings not wrapped): their units are
+        shared read-only, never written (unit) or freed (free) through this sequence."""
+        p = self.pool
+        if self.length or any(self.tables) or pin.pool is not p or n * p.block_size > pin.length \
+                or any(sl and pin.tags[g][:n] != list(range(n)) for g, sl in enumerate(p.sliding)):
+            raise ValueError("borrow needs an empty sequence and a sequence of the same pool holding blocks 0..n-1")
+        self.tables, self.tags = [t[:n] for t in pin.tables], [t[:n] for t in pin.tags]
+        self.length, self.shared = n * p.block_size, n
+
     def unit(self, g: int, b: int, write: bool = False) -> int:
         """The unit holding logical block b of group g. A sliding group's ring slot is retagged when written; a read
         of a block the ring no longer holds raises instead of returning another block's keys."""
         p = self.pool
+        if write and (b % p.ring if p.sliding[g] else b) < self.shared:   # before any retag or poison
+            raise RuntimeError(f"a write to block {b} of group {g} would overwrite a shared prefix")
         if not p.sliding[g]:
             return self.tables[g][b]
         i = b % p.ring
@@ -337,13 +350,13 @@ class WindowedSequence:
         self.length += n
 
     def free(self) -> None:
-        self.pool.allocator.free([u for t in self.tables for u in t])
+        self.pool.allocator.free([u for t in self.tables for u in t[self.shared:]])   # a borrowed prefix stays
         self.tables = [[] for _ in range(self.pool.n_groups)]
         self.tags = [[] for _ in range(self.pool.n_groups)]
-        self.length = 0
+        self.length = self.shared = 0
 
     def bytes_used(self) -> int:
-        return sum(map(len, self.tables)) * self.pool.unit_bytes
+        return (sum(map(len, self.tables)) - self.shared * len(self.tables)) * self.pool.unit_bytes
 
 
 class HybridState:

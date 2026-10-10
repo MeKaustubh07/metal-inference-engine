@@ -145,8 +145,8 @@ scripts/.venv/bin/python scripts/run_tests.py
 decision suites on their real models: Qwen3.5-0.8B, and Tiny Aya INT4 and INT8 on Metal (`--target aya-int4`,
 `aya-int8`: batched replies are compared with greedy decoding alone under a near-tie rule, and GPU memory and
 Metal's aborted work are gated). It runs tokenizer, aya, cohere2, window, sampling, paged, kernels and native, and
-the serving, prefill and decision suites on a tiny target: a random Cohere2 with a sliding window of 8, a tokenizer
-trained at test time and a chat template of its own (`--target tiny`, see `tests/serving_targets.py`). The 19 suites
+the serving, prefill, decision and prefix suites on a tiny target: a random Cohere2 with a sliding window of 8, a tokenizer
+trained at test time and a chat template of its own (`--target tiny`, see `tests/serving_targets.py`). The 20 suites
 cover the tokenizer (both models vs HF, the BPE merge vs HF on synthetic tables),
 Tiny Aya's files (config, sharded weights, chat template, registry, server routing), the Cohere2 model vs HF on small
 random models (every layer, greedy, caches, batching, bf16 KV, the length cap, a decode step reading its token id when called on Metal), the sliding window (exhaustively vs a
@@ -159,7 +159,8 @@ KV, the bf16 KV cache out to 7.6K tokens, GPU memory headroom and Metal's own lo
 of blocks or state slots), kernels, native runtime, quantization, Qwen3.5-0.8B vs HF fp32 (every layer),
 Qwen3.5-2B (bf16/INT8/INT4), the server (batched == sequential, preemption, streaming, 429, cancellation, drain)
 packed/chunked prefill (packed == alone, chunked == sequential, batching window) and decisions (forked == alone,
-shuffled options give bit-identical scores, stepwise jobs between decode steps). `--save docs/bench/raw/tests`
+shuffled options give bit-identical scores, stepwise jobs between decode steps) and the pinned chat preamble
+(a borrowed prefix == a chunk boundary at it, bit for bit; served == uncached; accounting, preemption, never-fit). `--save docs/bench/raw/tests`
 archives each suite's output and a summary with timings: the last full run (247 checks, 449 s) is in
 [`docs/bench/raw/tests/`](docs/bench/raw/tests/); the last run with Qwen2.5 is in
 [`docs/bench/raw/tests/2026-09-30-with-qwen2.5/`](docs/bench/raw/tests/2026-09-30-with-qwen2.5/).
@@ -203,7 +204,10 @@ scripts/               goldens, bench, quantize, calibrate, serve, loadgen, repl
 The engine is being extended to [Tiny Aya Global](https://huggingface.co/CohereLabs/tiny-aya-global) (Cohere2, 3.35B
 parameters, 70 languages): plan in [`docs/tiny-aya-plan.md`](docs/tiny-aya-plan.md), results in
 [`docs/results-log.md`](docs/results-log.md). On an 8 GB Mac it serves up to 8,192 tokens in INT4 (6,144 for
-`/v1/decide`) and 4,096 in INT8, so as to stay within the GPU memory Metal recommends. Tiny Aya is by Cohere and
+`/v1/decide`) and 4,096 in INT8, so as to stay within the GPU memory Metal recommends. With `serve.py --prefix-cache`
+its chat template's 352-token preamble is prefilled once and kept in the KV pool, so a one-line chat prefills only the
+~20 tokens after it: on a real server the first token comes 4x sooner (INT4 1.88 s -> 0.45 s; a burst of 8 chats p95
+15.3 s -> 2.2 s). Tiny Aya is by Cohere and
 Cohere Labs. Its weights are not part of this repository: they are gated on Hugging Face, licensed
 [CC-BY-NC 4.0 with an Acceptable Use Addendum](https://cohere.com/cohere-labs-cc-by-nc-license), subject to the
 [Cohere Labs Acceptable Use Policy](https://docs.cohere.com/docs/cohere-labs-acceptable-use-policy), and provided as

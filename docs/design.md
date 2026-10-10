@@ -67,7 +67,11 @@ against Hugging Face `transformers`.
    sequence in flight`; its prompt's blocks are reserved on admission, so a prefill never runs out halfway. The
    headroom stops a newcomer from being preempted on its very first step. When an idle engine is woken by an
    arrival, it keeps collecting arrivals that come within 5 ms of each other (`--batch-wait-ms`, default 5; twice
-   that in total at most), so requests that arrive together share one prefill pass.
+   that in total at most), so requests that arrive together share one prefill pass. With `--prefix-cache` (Tiny
+   Aya), the chat template's fixed preamble is prefilled once at start-up into a sequence that is never freed; a
+   chat whose ids start with it borrows those KV units read-only and prefills only the rest (`server/prefix.py`:
+   whole blocks only, never written or freed through the borrower, and only while its prompt + max_tokens cannot
+   wrap a ring onto them).
 4. **Prefill (packed and chunked).** Each loop iteration runs **one packed forward** over at most `prefill_chunk`
    prompt tokens (default 512), taken first come, first served from the prefilling requests. Per-token work
    (norms, projections, MLP) runs once over all their tokens, so several short prompts share one pass over the
@@ -312,6 +316,7 @@ The engine is **stateful**: a sequence's KV blocks and DeltaNet state live in on
   by a rule carried over from Qwen2.5 and not re-measured on Qwen3.5; MLX's is 4-bit), plus ~300 dispatches per
   step issued from Python.
 - Qwen3.5's KV cache is fp32 (Tiny Aya's is bf16); an INT8 KV cache would double the bf16 capacity again.
-- No prefix caching yet (item 2 above).
+- Prefix caching covers only the chat template's fixed preamble (opt-in, Tiny Aya); caching any shared prefix
+  (multi-turn history, Qwen's DeltaNet snapshots) is item 2 above.
 - Speculative decoding (Qwen3.5-0.8B drafting for 2B) would cut per-token latency at batch 1.
 - Text only: the checkpoint's vision tower is ignored.

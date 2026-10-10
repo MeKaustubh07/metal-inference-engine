@@ -137,7 +137,7 @@ class OutputFilter:
 
 def create_app(engine, max_batch: int = 8, max_waiting: int = 64, kv_blocks: int | None = None,
                max_model_len: int | None = None, drain_timeout: float = 2.0, prefill_chunk: int = 512,
-               batch_wait_ms: float = 5.0, lock_weights: bool = False) -> FastAPI:
+               batch_wait_ms: float = 5.0, lock_weights: bool = False, prefix_cache: bool = False) -> FastAPI:
     kv_blocks = kv_blocks or getattr(engine, "kv_blocks", None) or 1024   # default: the model's pool (else 1024)
     if missing := sorted(set(SAMPLING_FIELDS) - set(engine.sampling)):  # no silent fallback to another model's values
         raise ValueError(f"{engine.name}: the registry's sampling lacks {missing}")
@@ -153,7 +153,11 @@ def create_app(engine, max_batch: int = 8, max_waiting: int = 64, kv_blocks: int
     metrics = Metrics()
     sched = Scheduler(engine, metrics, max_batch=max_batch, max_waiting=max_waiting, kv_blocks=kv_blocks,
                       max_model_len=max_model_len, prefill_chunk=prefill_chunk, batch_wait_ms=batch_wait_ms,
-                      lock_weights=lock_weights)
+                      lock_weights=lock_weights, prefix_cache=prefix_cache)
+    if prefix_cache and sched.prefix:                   # the chat preamble pinned in the pool (server/prefix.py)
+        log.info(f"prefix cache: {len(sched.prefix.ids)} tokens pinned in {sched.pinned} KV units")
+    elif prefix_cache:
+        log.warning(f"prefix cache refused: {sched.prefix_note}")
     if lock_weights:
         if sched.lock_error:
             log.warning(f"could not lock the weights in memory ({sched.lock_error}); an idle server may be paged out")

@@ -1,9 +1,10 @@
 """Run every test script in sequence (each needs the model weights) and summarize. Exit 1 if any fails.
 
 usage: run_tests.py [--quick] [--save DIR]
-  --quick     skips the cache, quantization, Qwen3.5, Tiny Aya model / long / quant, serving, prefill and decision
-              suites on their real models (Qwen3.5-0.8B; Tiny Aya INT4 and INT8 on Metal); the serving, prefill and
-              decision suites still run on the tiny target (tests/serving_targets.py: a small random Cohere2 on the CPU)
+  --quick     skips the cache, quantization, Qwen3.5, Tiny Aya model / long / quant, serving, prefill, decision and prefix
+              suites on their real models (Qwen3.5-0.8B; Tiny Aya INT4 and INT8 on Metal); the serving, prefill,
+              decision and prefix suites still run on the tiny target (tests/serving_targets.py: a small random Cohere2 on
+              the CPU)
 An entry may carry arguments ("test_server --target tiny"); its report and saved output are named test_server@tiny.
   --save DIR  writes each suite's output to DIR/<suite>.txt and this summary, with timings, to DIR/run_tests.txt
 """
@@ -18,11 +19,13 @@ TESTS = ["test_tokenizer", "test_aya", "test_cohere2", "test_window", "test_samp
          "test_aya_long", "test_aya_long_quant", "test_aya_quant", "test_server", "test_prefill", "test_decision",
          "test_server --target tiny", "test_prefill --target tiny", "test_decision --target tiny",
          "test_server --target aya-int4", "test_prefill --target aya-int4", "test_decision --target aya-int4",
-         "test_server --target aya-int8", "test_prefill --target aya-int8", "test_decision --target aya-int8"]
+         "test_server --target aya-int8", "test_prefill --target aya-int8", "test_decision --target aya-int8",
+         "test_prefix --target tiny", "test_prefix", "test_prefix --target aya-int4", "test_prefix --target aya-int8"]
 SLOW = {"test_cache", "test_quant", "test_qwen35", "test_qwen35_2b", "test_aya_model", "test_aya_long",
         "test_aya_long_quant", "test_aya_quant", "test_server", "test_prefill", "test_decision",
         "test_server --target aya-int4", "test_prefill --target aya-int4", "test_decision --target aya-int4",
-        "test_server --target aya-int8", "test_prefill --target aya-int8", "test_decision --target aya-int8"}
+        "test_server --target aya-int8", "test_prefill --target aya-int8", "test_decision --target aya-int8",
+        "test_prefix", "test_prefix --target aya-int4", "test_prefix --target aya-int8"}
 
 
 def main() -> None:

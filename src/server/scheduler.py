@@ -26,6 +26,7 @@ import torch
 
 from backend.pinning import lock_in_memory, model_tensors
 from sampler import SamplingParams, sample, sample_batch
+from server.prefix import PinnedPrefix
 from state import OutOfBlocks
 
 
@@ -53,6 +54,7 @@ class Request:
     generator: torch.Generator | None = None
     cancelled: bool = False
     finish_reason: str | None = None
+    cached: int = 0                                       # prompt tokens borrowed from the pinned preamble (prefix.py)
 
 
 def _settle(fut: concurrent.futures.Future, result=None, error: Exception | None = None) -> None:
@@ -66,7 +68,7 @@ def _settle(fut: concurrent.futures.Future, result=None, error: Exception | None
 class Scheduler:
     def __init__(self, engine, metrics, max_batch: int = 8, max_waiting: int = 64, kv_blocks: int = 1024,
                  block_size: int = 16, max_model_len: int = 4096, prefill_chunk: int = 512,
-                 batch_wait_ms: float = 5.0, lock_weights: bool = False):
+                 batch_wait_ms: float = 5.0, lock_weights: bool = False, prefix_cache: bool = False):
         if not 1 <= max_batch <= 32:                          # batched decode kernels cover up to 32 rows
             raise ValueError("max_batch must be between 1 and 32")
         self.eng, self.metrics = engine, metrics
@@ -97,6 +99,8 @@ class Scheduler:
         self._ids = itertools.count()
         self._arrivals = 0                                    # submitted so far: the batching window counts these
         self._warmup()                                        # every layer has run: the weight cache is complete
+        self.prefix, self.prefix_note = PinnedPrefix.build(self) if prefix_cache else (None, "off")
+        self.pinned = self.prefix.units if self.prefix else 0
         # keep the weights in RAM (MPS only): otherwise an idle server's weights get compressed or swapped and the
         # next request waits for them to come back (backend/pinning.py)
         self.weights_locked, self.lock_error = 0, None
@@ -109,6 +113,7 @@ class Scheduler:
         metrics.set("kv_blocks_total", self.pool.allocator.num_blocks)            # in units of the pool
         metrics.set("kv_unit_bytes", self.pool.unit_bytes)
         metrics.set("kv_blocks_free", self.pool.allocator.num_free)
+        metrics.set("prefix_pinned_units", self.pinned)
         self.thread = threading.Thread(target=self._loop, name="engine", daemon=True)
         self.thread.start()
 
@@ -127,9 +132,11 @@ class Scheduler:
             raise ValueError("empty prompt")
         if len(prompt_ids) + max_new_tokens > self.max_model_len:
             raise ValueError(f"prompt ({len(prompt_ids)}) + max_tokens ({max_new_tokens}) exceeds {self.max_model_len}")
-        if self._blocks_for(len(prompt_ids) + max_new_tokens) > self.pool.allocator.num_blocks:
-            raise ValueError("request can never fit in the KV pool")    # would be preempted forever otherwise
-        req = Request(f"req-{next(self._ids)}", list(prompt_ids), params, max_new_tokens)
+        cached, bypass = self.prefix.match(prompt_ids, max_new_tokens) if self.prefix else (0, False)
+        own = self._blocks_for(len(prompt_ids) + max_new_tokens) - (self.pinned if cached else 0)
+        if own > self.pool.allocator.num_blocks - self.pinned:          # would wait or be preempted forever
+            raise ValueError("request can never fit in the KV pool")
+        req = Request(f"req-{next(self._ids)}", list(prompt_ids), params, max_new_tokens, cached=cached)
         if out is not None:
             req.out = out
         if params.seed is not None:
@@ -143,6 +150,8 @@ class Scheduler:
             self._arrivals += 1
             self.metrics.inc("requests_total")
             self.metrics.inc("prompt_tokens_total", len(prompt_ids))
+            if cached or bypass:
+                self.metrics.inc("prefix_hits_total" if cached else "prefix_bypasses_total")
             self.cond.notify()
         return req
 
@@ -255,18 +264,21 @@ class Scheduler:
                 # headroom: keep one step's growth free per sequence in flight (a unit per group), since each may
                 # cross a block boundary on its next step; otherwise the newcomer would be preempted right away and
                 # its prefill wasted
-                if self._blocks_for(len(ids) + 1) + in_flight * self.pool.max_step_units > self.pool.allocator.num_free:
+                own = self._blocks_for(len(ids) + 1) - (self.pinned if req.cached else 0)   # a hit borrows the rest
+                if own + in_flight * self.pool.max_step_units > self.pool.allocator.num_free:
                     return                                    # wait for running requests to free blocks
                 if not self.pool.free_seqs:
                     return                                    # wait for a DeltaNet state slot too
                 self.waiting.popleft()
             try:
                 req.state = self.model.new_paged_state(self.pool)
+                if req.cached:                                # the preamble's units first: reserve counts them
+                    self.prefix.attach(req.state)             # (a preempted hit borrows them again)
                 req.state.reserve(len(ids))                   # every prompt block now: chunks can never run out
             except Exception as e:                            # fail this request, not the server
                 self._finish(req, "error", f"admission failed: {e}")
                 continue
-            req.to_prefill, req.prefill_pos = ids, 0
+            req.to_prefill, req.prefill_pos = ids, req.state.length   # a hit starts after the preamble
             self.prefilling.append(req)
 
     def _prefill_step(self) -> None:
@@ -398,8 +410,11 @@ class Scheduler:
             req.out.put(("token", text[len(req.emitted):]))
             req.emitted = text
         if req.state is not None:                             # free first: whoever sees "done" sees the blocks back
-            req.state.free()
-            req.state = None
+            st, req.state = req.state, None
+            try:
+                st.free()
+            except Exception as e:                            # answer the client anyway; the engine keeps running
+                req.finish_reason, error = "error", error or f"freeing its KV units failed: {e}"
         if req in self.running:
             self.running.remove(req)
         if req in self.prefilling:
