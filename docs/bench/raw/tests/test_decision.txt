@@ -1,7 +1,11 @@
+PASS  tiny Cohere2 (window 8), float32 KV, contexts of 5-40 tokens: options scored on the context's own state with no fork == from their own forks (bit-exact), and the context left as its prefill left it (5/5)
+PASS  tiny Cohere2 (window 8), bfloat16 KV, contexts of 5-40 tokens: options scored on the context's own state with no fork == from their own forks (bit-exact), and the context left as its prefill left it (5/5)
 PASS  qwen3.5-0.8b torch-cpu-float32: a fork continues like the original (0.0e+00), and feeding a fork leaves the original exactly untouched (0.0e+00)
 PASS  qwen3.5-0.8b torch-cpu-float32: forked scores == each option scored alone as context + option, max |dlogprob| 5.3e-05 < 0.0002 ([-0.076, -3.235, -16.747, -7.589])
 PASS  qwen3.5-0.8b torch-cpu-float32: shuffling the options only shuffles their scores and embeddings (bit-exact)
 PASS  qwen3.5-0.8b torch-cpu-float32: options in groups of one (memory budget) == all in one pass, max |d| 0.0e+00 < 0.0002
+PASS  qwen3.5-0.8b torch-cpu-float32: in groups of one, each option is scored on the context's own state with no fork, == from its own fork (bit-exact)
+PASS  qwen3.5-0.8b torch-cpu-float32: afterwards the context's state is exactly what its prefill left (length, K/V, recurrent state)
 PASS  boolean: Paris is the capital -> True (P(yes) 0.64); Lyon -> False (P(yes) 0.39)
 PASS  score: a glowing review rates 3.33, a scathing one 1.10 (0-4 scale)
 PASS  choice: picks 'Paris'; probabilities sum to 1 (1.000000)
@@ -18,9 +22,12 @@ PASS  /v1/decide boolean with embeddings: True, one 1024-dim embedding per optio
 PASS  /v1/decide rejects bad input: [422, 422, 400, 400] == [422, 422, 400, 400]
 PASS  decisions counted in /metrics (engine_decisions_total 3)
 PASS  no KV blocks used by decisions (they run on their own forked states)
+PASS  the CPU target's model is freed before the Metal section
 PASS  qwen3.5-0.8b metal-kernels-int4: a fork continues like the original (0.0e+00), and feeding a fork leaves the original exactly untouched (0.0e+00)
-PASS  qwen3.5-0.8b metal-kernels-int4: forked scores == each option scored alone as context + option, max |dlogprob| 5.7e-06 < 0.02 ([-0.163, -2.895, -16.405, -7.373])
+PASS  qwen3.5-0.8b metal-kernels-int4: forked scores == each option scored alone as context + option, max |dlogprob| 4.8e-06 < 0.02 ([-0.163, -2.895, -16.405, -7.373])
 PASS  qwen3.5-0.8b metal-kernels-int4: shuffling the options only shuffles their scores and embeddings (bit-exact)
 PASS  qwen3.5-0.8b metal-kernels-int4: options in groups of one (memory budget) == all in one pass, max |d| 0.0e+00 < 0.02
+PASS  qwen3.5-0.8b metal-kernels-int4: in groups of one, each option is scored on the context's own state with no fork, == from its own fork (bit-exact)
+PASS  qwen3.5-0.8b metal-kernels-int4: afterwards the context's state is exactly what its prefill left (length, K/V, recurrent state)
 
-24/24 passed
+31/31 passed

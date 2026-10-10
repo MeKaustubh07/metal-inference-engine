@@ -1,0 +1,14 @@
+PASS  ids from the engine's tokenizer == the key's for the 4802-token text in 8 languages (en, fr, de, es, hi, ar, zh, ja)
+         24 s  prefill 1024/4802
+         48 s  prefill 2048/4802
+         73 s  prefill 3072/4802
+         98 s  prefill 4096/4802
+        125 s  prefill 4802/4802
+PASS  final norm of all 4802 positions == the key's: worst row 3.4e-05 before position 4096, 1.4e-05 from it on (median 1.9e-06)
+PASS  logits at the key's 93 rows (every 64th, 4090-4100, the last 8): worst row 5.7e-06
+PASS  9 decode steps at positions 4802-4810 == the key's, worst row 2.5e-06
+PASS  greedy: the first new token == the key's (15951), and the key's 10 tokens are the argmax at every step
+PASS  window off from position 4096: worst row 3.9e+00 (median 4.1e-01), vs 1.4e-05 with it
+      343 s
+
+6/6 passed

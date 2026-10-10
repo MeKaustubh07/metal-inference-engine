@@ -1,0 +1,31 @@
+PASS  tiny Cohere2 (window 8), float32 KV, contexts of 5-40 tokens: options scored on the context's own state with no fork == from their own forks (bit-exact), and the context left as its prefill left it (5/5)
+PASS  tiny Cohere2 (window 8), bfloat16 KV, contexts of 5-40 tokens: options scored on the context's own state with no fork == from their own forks (bit-exact), and the context left as its prefill left it (5/5)
+PASS  tiny-aya-global metal-kernels-int8: a fork continues like the original (0.0e+00), and feeding a fork leaves the original exactly untouched (0.0e+00)
+PASS  tiny-aya-global metal-kernels-int8: forked scores == each option scored alone as context + option, max |dlogprob| 7.0e-04 < 0.02 ([-0.5, -11.979, -13.951, -12.564])
+PASS  tiny-aya-global metal-kernels-int8: shuffling the options only shuffles their scores and embeddings (bit-exact)
+PASS  tiny-aya-global metal-kernels-int8: options in groups of one (memory budget) == all in one pass, max |d| 0.0e+00 < 0.02
+PASS  tiny-aya-global metal-kernels-int8: in groups of one, each option is scored on the context's own state with no fork, == from its own fork (bit-exact)
+PASS  tiny-aya-global metal-kernels-int8: afterwards the context's state is exactly what its prefill left (length, K/V, recurrent state)
+INFO  boolean: Paris is the capital -> True (P(yes) 0.87); Lyon -> False (P(yes) 0.08): holds (reported, not gated)
+INFO  score: a glowing review rates 2.85, a scathing one 1.83 (0-4 scale): holds (reported, not gated)
+PASS  choice: picks 'Paris'; probabilities sum to 1 (1.000000)
+PASS  prepare rejects an unknown type, 3 boolean options, 1 choice, no score labels, an empty option (5/5)
+PASS  boundary tokens: {'0': False, 'es': False, ' Paris': True, ',': True, '\n': True, '<|END_OF_TURN_TOKEN|>': True}
+PASS  plain prompts put one space before each option
+PASS  forked scores with the boundary term == one-sequence reference, max |d| 7.0e-04 < 2e-2
+INFO  '10' is not swallowed by its prefix '1': 7 + 3 -> '10' (P('1' as a word) 0.001, P('10') 0.821, disjoint: sum <= 1): holds (reported, not gated)
+PASS  a 428-token context prefilled in 4-token chunks scores like one pass (max |d| 9.9e-04 < 2e-2)
+PASS  a decision over a 437-token context ran in 28 chunks while a stream generated 30 tokens, and gives the same result as running it whole
+PASS  a cancelled queued decision never runs (['later']); with 2 queued, /ready is false and a third is turned away
+PASS  /v1/decide choice: decision 0 ('Paris'); the shuffled request picks the same option with the same probabilities
+PASS  /v1/decide boolean with embeddings: True, one 2048-dim embedding per option
+INFO  /v1/decide boolean: Paris is the capital -> True: holds (reported, not gated)
+PASS  /v1/decide rejects bad input: [422, 422, 400, 400] == [422, 422, 400, 400]
+PASS  decisions counted in /metrics (engine_decisions_total 3)
+PASS  no KV blocks used by decisions (they run on their own forked states)
+PASS  GPU memory: peak 4.05 GiB <= 0.95 x the 5.33 GiB Metal recommends
+PASS  Metal aborted no command buffer of this process (macOS log: 0)
+PASS  the GPU target's model is freed and the MPS cache emptied
+N/A   Metal INT4 (Qwen3.5-0.8B): forks, shuffles, groups of one and the rewind within INT4/bf16 noise
+
+24/24 passed

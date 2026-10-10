@@ -118,7 +118,9 @@ ones, so the answer could depend on their order. Instead:
    they too are identical under any permutation.
 The work runs on the engine thread as a stepwise job (`Scheduler.run_job`): one context chunk or option group per
 loop iteration, with decode steps for running streams in between; a client that disconnects cancels it. Forks are
-standalone states outside the KV pool, run in groups that keep them under 256 MB. The JEV-style "answer token that
+standalone states outside the KV pool, run in groups that keep them under 256 MB; when only one option fits a group
+(long contexts), each option runs on the context's own state, which is then rewound (its length reset, the DeltaNet
+state restored from a copy): bit-identical to a fork, without copying the context. The JEV-style "answer token that
 sees every option" has no order-invariant equivalent in the DeltaNet layers (a recurrence reads the options in
 some order), so options are scored independently.
 
@@ -305,9 +307,10 @@ The engine is **stateful**: a sequence's KV blocks and DeltaNet state live in on
 - **After idle and on first use**: the KV cache and DeltaNet state pools (~0.5 GB) are not locked, so an idle server
   can still lose up to ~0.2 s on its next first token, and the first request of each new prompt length pays
   ~0.1–0.2 s of MPS shape compilation. Locking the pools and warming common prompt lengths at start-up fix both.
-- **Decisions copy the context per option**: each fork holds its own copy of the context's K/V (and the ~19 MB
-  DeltaNet state), so time and memory grow with context length × options (grouped under 256 MB). Sharing the
-  context's KV blocks copy-on-write, the basis of prefix caching, would remove the copy.
+- **Decisions prefill their context outside the pool**: short contexts fork per option group (grouped under 256 MB);
+  long ones score each option on the context's own state and rewind it, so the peak is the context's prefill, not
+  copies (Tiny Aya INT4 at 8K: 4.99 GiB, hence its 6,144-token decide cap). Sharing the pinned chat preamble with
+  decide's context would save its ~1.1 s prefill per chat-style decision.
 - Batch 2 barely beats batch 1: the linears cost 33 vs 17 ms, and the 2-rows kernel is 1.2–2.1× slower than the
   single-row kernel at one row (which is why M = 1 keeps its own kernel).
   Simdgroup-matrix (8×8 hardware tile) kernels, as in MLX and llama.cpp's `mul_mm`, are the next step for both

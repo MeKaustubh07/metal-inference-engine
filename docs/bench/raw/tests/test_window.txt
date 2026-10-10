@@ -1,0 +1,35 @@
+PASS  windowed ops.attention == oracle on all 18320 cases (W 1-10, T 1-8, start 0-24, every valid key suffix), worst 3.8e-06
+PASS  sensitivity: a window off by one (W - 1 or W + 1) differs from the oracle for all 19 off-by-one windows over W 1-10
+PASS  8/2 heads, 5 queries over 40 keys, window 7, q-scale 1: max|diff| vs oracle 2.1e-07
+PASS  8/2 heads, 5 queries over 40 keys, window 7, q-scale 30: max|diff| vs oracle 3.9e-07
+PASS  8/2 heads, 12 queries over 12 keys, window 4, q-scale 1: max|diff| vs oracle 3.2e-07
+PASS  8/2 heads, 6 queries over 13 keys, window 13, q-scale 1: max|diff| vs oracle 2.4e-07
+PASS  8/2 heads, 1 query over 300 keys, window 64, q-scale 1: max|diff| vs oracle 1.1e-07
+PASS  window=None and a window >= every query's position are bit-identical to no window
+PASS  window 0 refused
+PASS  in-place scores, masking and softmax are bit-identical to the formula before M5 (4 shapes, CPU)
+PASS  paged reference, window 16, lengths [1, 6, 7, 20, 21, 43], block size 4: finite with the blocks before the window NaN, max|diff| 0.0e+00
+PASS  paged reference, window 20, lengths [1, 6, 7, 20, 21, 43], block size 4: finite with the blocks before the window NaN, max|diff| 0.0e+00
+PASS  paged reference, window 6, lengths [1, 6, 7, 20, 21, 43], block size 4: finite with the blocks before the window NaN, max|diff| 0.0e+00
+PASS  model, window 8, 40 positions, stateless: embedding, 8 layers, final norm and logits == HF, worst 2.2e-06
+PASS  model, contiguous: chunked prefill == HF for 6 chunk schedules (ending at the window, longer than it, token by token), worst 5.2e-06
+PASS  model, paged (blocks of 4): chunked prefill == HF for 6 chunk schedules (ending at the window, longer than it, token by token), worst 5.2e-06
+PASS  model, paged (blocks of 3): chunked prefill == HF for 6 chunk schedules (ending at the window, longer than it, token by token), worst 5.2e-06
+PASS  model, contiguous: greedy 20 tokens from a 6-token prompt (to position 26) == HF
+PASS  model, paged: greedy 20 tokens from a 6-token prompt (to position 26) == HF
+PASS  model: batched paged decode of 3 sequences (5, 13, 30 positions) == each alone, 3 steps, worst 2.2e-06
+PASS  model: packed prefill with a continuing chunk past the window == separate forwards, relative error 7.1e-07
+PASS  model: a fork at position 30 and the original continue independently and exactly
+PASS  ring: 40 positions in chunks <= 3 with every ring slot reused, NaN-poisoned: == HF 2.1e-06; units held per group [10, 4, 4, 4] (full: 10 blocks; sliding: rings of 4)
+PASS  ring: 10 greedy tokens past position 40 == HF's
+PASS  ring: batched decode of 3 sequences (5, 19, 30 positions) == each alone, 6 steps, worst 2.6e-06
+PASS  ring: a 20-token chunk (the ring holds chunks of 3) is refused alone and in a pack, nothing moved
+PASS  scheduler on the grouped pool (rings of 4 blocks): 1 preemption, every request's 30 tokens == HF greedy, all 56 units and the state slots back
+PASS  scheduler: never-fit counts the rings: 100 positions need 37 units (not 100), 260 need 77 > 56: refused
+PASS  model, bf16 KV past the window: paged (blocks of 3) == contiguous, max difference 0.0e+00
+PASS  answer-key generator: chunked prefill (5, 3, 17, 15) over one cache == HF's full forward past the window: final norm 1.7e-06, logits 1.8e-06
+PASS  block allocator: freeing twice, a never-allocated block, -1 or out of range raises; frees stay LIFO
+PASS  grouped pool: 150 random chunks over 5 (window, block, max chunk) settings: every read == what was written, poisoned stale slots never read, units held exact, an oversized chunk refused, all freed
+PASS  grouped pool: a reserve the pool cannot satisfy takes nothing (free 4 of 12 units)
+
+33/33 passed

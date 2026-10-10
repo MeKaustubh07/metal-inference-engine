@@ -5,30 +5,56 @@ PASS  rms_norm (fp32 weights) x[64, 1024] max|diff|=4.8e-07
 PASS  rms_norm (fp32 weights) x[7, 8, 256] max|diff|=4.8e-07
 PASS  rms_norm (fp32 weights) x[7, 2, 256] max|diff|=7.2e-07
 PASS  rms_norm (bf16 weights) T=7 max|diff|=6.0e-08
-PASS  rope H=10 positions up to 4: relative max|diff|=4.5e-08
-PASS  rope H=10 positions up to 31999: relative max|diff|=7.8e-08
-PASS  matvec 5120x1024: rel diff 1.5e-07 | cold weights: ours 154 us (68 GB/s) vs torch 180 us
-PASS  matvec 1024x2048: rel diff 2.1e-07 | cold weights: ours 72 us (58 GB/s) vs torch 88 us
-PASS  matvec 8224x1024: rel diff 1.6e-07 | cold weights: ours 249 us (68 GB/s) vs torch 291 us
-PASS  matvec 7168x1024: rel diff 1.5e-07 | cold weights: ours 199 us (74 GB/s) vs torch 214 us
-PASS  matvec 1024x3584: rel diff 2.3e-07 | cold weights: ours 110 us (67 GB/s) vs torch 114 us
-PASS  matvec 248320x1024: rel diff 1.9e-07 | cold weights: ours 5450 us (93 GB/s) vs torch 5336 us
-PASS  matvec 896x896 +bias: rel diff 1.4e-07 | cold weights: ours 28 us (57 GB/s) vs torch 41 us
+PASS  layer_norm x[1, 2048] (offset 0) max|diff|=4.8e-07
+PASS  layer_norm x[7, 2048] (offset 5) max|diff|=9.5e-07
+PASS  layer_norm x[64, 2048] (offset 100) max|diff|=6.2e-06
+PASS  rope 10 heads d=64 theta 1e+07, positions up to 4: relative max|diff| vs the CPU reference 7.4e-08
+PASS  rope 10 heads d=64 theta 1e+07, positions up to 31999: relative max|diff| vs the CPU reference 8.2e-08
+PASS  rope 20 heads d=128 theta 50000, positions up to 8191: relative max|diff| vs the CPU reference 7.0e-08
+PASS  matvec 5120x1024: rel diff 1.5e-07 | cold weights: ours 151 us (69 GB/s) vs torch 179 us
+PASS  matvec 1024x2048: rel diff 1.9e-07 | cold weights: ours 72 us (58 GB/s) vs torch 88 us
+PASS  matvec 8224x1024: rel diff 1.6e-07 | cold weights: ours 248 us (68 GB/s) vs torch 276 us
+PASS  matvec 7168x1024: rel diff 1.7e-07 | cold weights: ours 208 us (71 GB/s) vs torch 243 us
+PASS  matvec 1024x3584: rel diff 2.2e-07 | cold weights: ours 121 us (61 GB/s) vs torch 144 us
+PASS  matvec 248320x1024: rel diff 1.9e-07 | cold weights: ours 5695 us (89 GB/s) vs torch 5372 us
+PASS  matvec 896x896 +bias: rel diff 1.3e-07 | cold weights: ours 28 us (57 GB/s) vs torch 40 us
 PASS  gemm T=7 5120x1024: rel diff 1.1e-06 | tiled 595 us (0.12 TFLOP/s) vs torch 174 us
-PASS  gemm T=64 7168x1024: rel diff 0.0e+00 | tiled 3226 us (0.29 TFLOP/s) vs torch 799 us
-PASS  gemm T=256 1024x3584: rel diff 0.0e+00 | tiled 6434 us (0.29 TFLOP/s) vs torch 1522 us
-PASS  gemm T=1024 8224x1024: rel diff 0.0e+00 | tiled 58853 us (0.29 TFLOP/s) vs torch 12933 us
-PASS  matvec + fused residual: rel diff 1.8e-07
-PASS  fused swiglu: rel diff 2.3e-07 | fused 162 us vs 3 separate kernels 177 us
-PASS  attention_decode S=1 q-scale 1 d=256: max|diff|=0.0e+00 | ours 16 us vs torch ops 85 us
-PASS  attention_decode S=5 q-scale 1 d=256: max|diff|=3.3e-07 | ours 17 us vs torch ops 91 us
-PASS  attention_decode S=300 q-scale 1 d=256: max|diff|=2.1e-07 | ours 78 us vs torch ops 220 us
-PASS  attention_decode S=2048 q-scale 1 d=256: max|diff|=1.9e-07 | ours 623 us vs torch ops 1106 us
-PASS  attention_decode S=300 q-scale 30 d=256: max|diff|=2.0e-05 | ours 79 us vs torch ops 224 us
-PASS  attention_decode S=2048 q-scale 30 d=256: max|diff|=1.2e-05 | ours 619 us vs torch ops 1107 us
-PASS  attention_decode S=300 q-scale 30 d=64: max|diff|=5.3e-06 | ours 34 us vs torch ops 129 us
-PASS  paged_attention_decode B=5 lengths [1, 7, 16, 33, 300], block size 16, scrambled tables, 8/2 heads d=256: max|diff|=6.0e-07
+PASS  gemm T=64 7168x1024: rel diff 0.0e+00 | tiled 3227 us (0.29 TFLOP/s) vs torch 804 us
+PASS  gemm T=256 1024x3584: rel diff 0.0e+00 | tiled 6436 us (0.29 TFLOP/s) vs torch 1521 us
+PASS  gemm T=1024 8224x1024: rel diff 0.0e+00 | tiled 58793 us (0.29 TFLOP/s) vs torch 12924 us
+PASS  matvec + fused residual: rel diff 1.9e-07
+PASS  fused swiglu: rel diff 2.2e-07 | fused 163 us vs 3 separate kernels 177 us
+PASS  attention_decode S=1 q-scale 1 d=256: max|diff|=0.0e+00 | ours 15 us vs torch ops 82 us
+PASS  attention_decode S=5 q-scale 1 d=256: max|diff|=3.6e-07 | ours 16 us vs torch ops 89 us
+PASS  attention_decode S=300 q-scale 1 d=256: max|diff|=6.3e-07 | ours 74 us vs torch ops 219 us
+PASS  attention_decode S=2048 q-scale 1 d=256: max|diff|=1.9e-07 | ours 613 us vs torch ops 1107 us
+PASS  attention_decode S=300 q-scale 30 d=256: max|diff|=1.5e-05 | ours 78 us vs torch ops 218 us
+PASS  attention_decode S=2048 q-scale 30 d=256: max|diff|=2.2e-05 | ours 616 us vs torch ops 1103 us
+PASS  attention_decode S=300 q-scale 30 d=64: max|diff|=1.4e-05 | ours 34 us vs torch ops 126 us
+PASS  attention_decode Tiny Aya shape S=1 16/4 heads d=128: max|diff|=0.0e+00
+PASS  attention_decode Tiny Aya shape S=300 16/4 heads d=128: max|diff|=3.3e-07
+PASS  attention_decode Tiny Aya shape S=4096 16/4 heads d=128: max|diff|=1.4e-07
+PASS  paged_attention_decode B=5 lengths [1, 7, 16, 33, 300], block size 16, scrambled tables, 8/2 heads d=256: max|diff|=7.2e-07
 PASS  paged_attention_decode B=5 lengths [1, 7, 16, 33, 300], block size 16, scrambled tables, 14/2 heads d=64: max|diff|=3.6e-07
+PASS  paged_attention_decode B=5 lengths [1, 7, 16, 33, 300], block size 16, scrambled tables, 16/4 heads d=128: max|diff|=4.8e-07
+PASS  attention_decode_bf16 S=1 q-scale 1 16/4 heads d=128: == fp32 kernel on the widened cache: True, max|diff| vs reference 0.0e+00 | bf16 14 us vs fp32 14 us
+PASS  attention_decode_bf16 S=300 q-scale 1 16/4 heads d=128: == fp32 kernel on the widened cache: True, max|diff| vs reference 2.2e-07 | bf16 68 us vs fp32 67 us
+PASS  attention_decode_bf16 S=4096 q-scale 1 16/4 heads d=128: == fp32 kernel on the widened cache: True, max|diff| vs reference 1.4e-07 | bf16 765 us vs fp32 844 us
+PASS  attention_decode_bf16 S=8192 q-scale 1 16/4 heads d=128: == fp32 kernel on the widened cache: True, max|diff| vs reference 1.3e-07 | bf16 1576 us vs fp32 1698 us
+PASS  attention_decode_bf16 S=300 q-scale 30 8/2 heads d=256: == fp32 kernel on the widened cache: True, max|diff| vs reference 2.4e-05 | bf16 78 us vs fp32 77 us
+PASS  attention_decode_bf16 S=300 q-scale 1 14/2 heads d=64: == fp32 kernel on the widened cache: True, max|diff| vs reference 9.7e-08 | bf16 34 us vs fp32 34 us
+PASS  paged_attention_decode_bf16 B=5, 8/2 heads d=256: == fp32 kernel on the widened pool: True, max|diff| vs reference 7.2e-07
+PASS  paged_attention_decode_bf16 B=5, 16/4 heads d=128: == fp32 kernel on the widened pool: True, max|diff| vs reference 8.3e-07
+PASS  attention_decode with a window, 16/4 heads d=128, 13 cases at W - 1, W, W + 1, 2W + 3 (W 1, 16) and 4095-8192 (W 4096): max|diff| 4.8e-07
+PASS  attention_decode_bf16 with a window, 16/4 heads d=128, 13 cases at W - 1, W, W + 1, 2W + 3 (W 1, 16) and 4095-8192 (W 4096): max|diff| 6.0e-07
+PASS  paged_attention_decode window 16, lengths [1, 16, 17, 35, 300], blocks before the window NaN: finite, max|diff| 7.2e-07
+PASS  paged_attention_decode window 20, lengths [1, 20, 21, 43, 300], blocks before the window NaN: finite, max|diff| 6.0e-07
+PASS  paged_attention_decode window 128, lengths [1, 128, 129, 259, 300], blocks before the window NaN: finite, max|diff| 3.6e-07
+PASS  paged_attention_decode_bf16 window 16, lengths [1, 16, 17, 35, 300], blocks before the window NaN: finite, max|diff| 4.8e-07
+PASS  paged_attention_decode_bf16 window 20, lengths [1, 20, 21, 43, 300], blocks before the window NaN: finite, max|diff| 3.6e-07
+PASS  paged_attention_decode_bf16 window 128, lengths [1, 128, 129, 259, 300], blocks before the window NaN: finite, max|diff| 3.6e-07
+PASS  paged_attention refuses a float16 / float16 pool (TypeError)
+PASS  paged_attention refuses a bfloat16 / float32 pool (TypeError)
 PASS  lock_in_memory: 256 MiB locked for 4 x 64 MiB MPS tensors (+ a view of one); user wire count of their memory [0, 0, 0, 0] -> [1, 1, 1, 1] -> [0, 0, 0, 0] after unlock; GPU results unchanged
 
-32/32 kernel checks passed
+58/58 kernel checks passed

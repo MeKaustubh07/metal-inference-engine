@@ -13,11 +13,13 @@ PASS  length-cut stream equals decode of generated ids: ' é中文�'
 PASS  padding ids (>= 248077) are never produced
 PASS  sample_batch == sample row by row on cpu (300 random batches: greedy, penalties on the top tokens, top-k off or above the batch cap, all-tie and straddling ties): 0 mismatches
 PASS  sample_batch == sample row by row on mps (300 random batches: greedy, penalties on the top tokens, top-k off or above the batch cap, all-tie and straddling ties): 0 mismatches
-PASS  a NaN row yields its error while its seeded batch-mate keeps its own first draw (980 == 980)
-PASS  a batch-mate with top_k=247000 costs only its own row: 3 ms -> 41 ms (< base + 150 ms)
+PASS  a NaN row yields its error while its seeded batch-mate keeps its own first draw (228 == 228)
+PASS  a batch-mate with top_k=247000 costs only its own row: 3 ms -> 40 ms (< base + 150 ms)
       reply: ' Paris is the capital of France.'  (7 tokens, stop=eos)
 PASS  real reply stops on EOS before the token limit
 PASS  real reply stream == decode(generated ids)
 PASS  real reply mentions Paris
+PASS  qwen3.5-0.8b: every request samples as before M6 (81/81 subsets of fields sent)
+PASS  qwen3.5-2b: every request samples as before M6 (81/81 subsets of fields sent)
 
-20/20 checks passed
+22/22 checks passed

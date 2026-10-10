@@ -1,11 +1,11 @@
-      bf16 : weights 3.76 GB | greedy = HF for 64/70 tokens | top-1 flips 0/190 non-tied positions | KL vs HF bf16 0.0004 | decode 20.4 tok/s | ' Paris.\nA. True' | divergence gaps [0.019]
-      int8 : weights 2.00 GB | greedy = HF for 70/70 tokens | top-1 flips 0/190 non-tied positions | KL vs HF bf16 0.0007 | decode 37.9 tok/s | ' Paris.\nA. True' | divergence gaps []
-      int4 : weights 1.41 GB | greedy = HF for 47/70 tokens | top-1 flips 3/190 non-tied positions | KL vs HF bf16 0.0454 | decode 46.4 tok/s | ' Paris. The capital of the' | divergence gaps [0.063, 0.042, 0.105]
+      bf16 : weights 3.76 GB | greedy = HF for 64/70 tokens | top-1 flips 0/190 non-tied positions | KL vs HF bf16 0.0004 | decode 22.1 tok/s | ' Paris.\nA. True' | divergence gaps [0.019]
+      int8 : weights 2.00 GB | greedy = HF for 70/70 tokens | top-1 flips 0/190 non-tied positions | KL vs HF bf16 0.0007 | decode 37.8 tok/s | ' Paris.\nA. True' | divergence gaps []
+      int4 : weights 1.41 GB | greedy = HF for 47/70 tokens | top-1 flips 3/190 non-tied positions | KL vs HF bf16 0.0454 | decode 48.7 tok/s | ' Paris. The capital of the' | divergence gaps [0.063, 0.042, 0.105]
 PASS  bf16: greedy == HF bf16 (64/70 tokens) except at near-ties (HF's token is our runner-up within 0.5 logits; gaps [0.019])
 PASS  int8: KL vs HF bf16 < 0.05 (0.0007) and top-1 flips <= 2% of non-tied positions
 PASS  int4 (calibrated policy): KL vs HF bf16 < 0.15 (0.0454) and top-1 flips <= 10% of non-tied positions
 PASS  int4 fits comfortably in 8 GB: 1.41 GB of weights
 PASS  int4 still answers Paris
-PASS  quantization speeds up decode: bf16 20.4 < int8 37.9 and int4 46.4 tok/s
+PASS  quantization speeds up decode: bf16 22.1 < int8 37.8 and int4 48.7 tok/s
 
 6/6 checks passed

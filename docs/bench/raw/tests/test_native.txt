@@ -1,7 +1,7 @@
       device: Apple M2
-PASS  native matvec 896x896: rel diff 1.1e-07 | cold reads over 41 copies: 26 us GPU (61 GB/s), 39 us wall per dispatch
-PASS  native matvec 4864x896: rel diff 1.6e-07 | cold reads over 7 copies: 114 us GPU (77 GB/s), 190 us wall per dispatch
-PASS  native matvec 151936x896: rel diff 1.8e-07 | cold reads over 1 copies: 2924 us GPU (93 GB/s), 3230 us wall per dispatch
+PASS  native matvec 896x896: rel diff 1.1e-07 | cold reads over 41 copies: 26 us GPU (61 GB/s), 36 us wall per dispatch
+PASS  native matvec 4864x896: rel diff 1.6e-07 | cold reads over 7 copies: 113 us GPU (77 GB/s), 160 us wall per dispatch
+PASS  native matvec 151936x896: rel diff 1.8e-07 | cold reads over 1 copies: 2909 us GPU (94 GB/s), 3213 us wall per dispatch
 PASS  unified memory: a CPU write through the torch view is seen by the GPU kernel (8 x 896 ones -> 896)
 
 4/4 checks passed

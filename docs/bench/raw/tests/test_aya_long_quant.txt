@@ -1,0 +1,15 @@
+      int8, float32 KV: KL vs the fp32 key, rows before 4096 0.0007, from it on 0.0009, decode steps 0.0008 (max 0.007); greedy == key 9/10; GPU memory 4.95 GiB
+      int8, bfloat16 KV: KL vs the fp32 key, rows before 4096 0.0007, from it on 0.0009, decode steps 0.0008 (max 0.006); greedy == key 9/10; GPU memory 4.59 GiB
+      int4, float32 KV: KL vs the fp32 key, rows before 4096 0.0800, from it on 0.1240, decode steps 0.1349 (max 0.325); greedy == key 6/10; GPU memory 4.24 GiB
+      int4, bfloat16 KV: KL vs the fp32 key, rows before 4096 0.0801, from it on 0.1243, decode steps 0.1359 (max 0.320); greedy == key 6/10; GPU memory 4.57 GiB
+PASS  int8, float32 KV past the window: KL vs the fp32 key < 0.05 over the key's rows and decode steps (0.0008; 0.0009 from position 4096) and over the decode steps alone (0.0008)
+PASS  int8, bfloat16 KV past the window: KL vs the fp32 key < 0.05 over the key's rows and decode steps (0.0008; 0.0009 from position 4096) and over the decode steps alone (0.0008)
+PASS  int4, float32 KV past the window: KL vs the fp32 key < 0.15 over the key's rows and decode steps (0.0948; 0.1240 from position 4096) and over the decode steps alone (0.1349)
+PASS  int4, bfloat16 KV past the window: KL vs the fp32 key < 0.15 over the key's rows and decode steps (0.0950; 0.1243 from position 4096) and over the decode steps alone (0.1359)
+PASS  GPU memory: every run stays under 0.95 x Metal's recommended 5.33 GiB (highest: int8, float32 KV, 4.95 GiB)
+PASS  int8: bf16 KV changes the KL by at most 0.01 either way (+0.0000)
+PASS  bf16 KV out to 7604 tokens (INT4): KL(fp32 KV || bf16 KV) mean 0.0000 (before 4096 0.0000, from it on 0.0000, max 0.000); greedy identical for 32/32 tokens
+PASS  Metal aborted no command buffer of this process (macOS log: 0)
+      483 s in all
+
+8/8 passed

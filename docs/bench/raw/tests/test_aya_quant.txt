@@ -1,0 +1,13 @@
+      int8, float32 KV: 169 positions | KL vs fp32 mean 0.0006 (max 0.016; at the 150 served positions 0.0004) | top-1 flips 0/116 non-tied | greedy == reference for 90/90 tokens | decode 14.4 tok/s
+      int8, bfloat16 KV: 169 positions | KL vs fp32 mean 0.0006 (max 0.017; at the 150 served positions 0.0004) | top-1 flips 0/116 non-tied | greedy == reference for 90/90 tokens | decode 13.5 tok/s
+      int8: weights 3.56 GB | bf16 KV changes the KL by -0.0000 (-0.0000 at served positions)
+      int4, float32 KV: 169 positions | KL vs fp32 mean 0.1050 (max 3.571; at the 150 served positions 0.0543) | top-1 flips 9/116 non-tied | greedy == reference for 44/90 tokens | decode 13.5 tok/s
+      int4, bfloat16 KV: 169 positions | KL vs fp32 mean 0.1037 (max 3.312; at the 150 served positions 0.0544) | top-1 flips 9/116 non-tied | greedy == reference for 44/90 tokens | decode 18.0 tok/s
+      int4: weights 2.34 GB | bf16 KV changes the KL by -0.0013 (+0.0001 at served positions)
+PASS  int8, float32 KV: KL vs the fp32 answer key < 0.05 (0.0006) and top-1 flips <= 2% of non-tied positions (0/116)
+PASS  int8, bfloat16 KV: KL vs the fp32 answer key < 0.05 (0.0006) and top-1 flips <= 2% of non-tied positions (0/116)
+PASS  int4, float32 KV: KL vs the fp32 answer key < 0.15 (0.1050) and top-1 flips <= 10% of non-tied positions (9/116)
+PASS  int4, bfloat16 KV: KL vs the fp32 answer key < 0.15 (0.1037) and top-1 flips <= 10% of non-tied positions (9/116)
+PASS  int8: bf16 KV changes the KL by at most 0.01 either way (-0.0000)
+
+5/5 passed

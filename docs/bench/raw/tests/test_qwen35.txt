@@ -21,7 +21,7 @@ PASS  prompt 3: cached greedy == HF: '\nThe quick brown fox jumps over the lazy 
 PASS  prompt 4: cached greedy == HF: '\nयह परीक्षण के लिए आपको एक'
 PASS  prompt 5: cached greedy == HF: '\n\nThe history of computing is also a story of'
 PASS  prompt 6: cached greedy == HF: ' Inference engines turn trained weights into answers. In'
-      greedy decoding, 7 prompts x 10 tokens: 10.1s
+      greedy decoding, 7 prompts x 10 tokens: 7.4s
 PASS  hybrid state (contiguous KV + recurrent/conv): 126 tokens as 70 + 65 + singles == uncached, max|diff| 4.3e-05
 PASS  hybrid state (paged KV + recurrent/conv): 126 tokens as 70 + 65 + singles == uncached, max|diff| 4.3e-05
 PASS  KV exhaustion raises before any layer runs: recurrent and conv state unchanged, length unchanged

@@ -73,10 +73,14 @@ scripts/.venv/bin/python scripts/serve.py --model qwen3.5-2b --backend metal-int
 curl -N http://127.0.0.1:8000/v1/chat/completions -H 'content-type: application/json' -d '{"messages":[{"role":"user","content":"Explain KV caching in two sentences."}],"stream":true}'
 ```
 
-Any OpenAI client works with `base_url="http://127.0.0.1:8000/v1"`.
+Any OpenAI client works with `base_url="http://127.0.0.1:8000/v1"`. Sampling fields left out or `null` take the
+model's own values from its registry entry (Tiny Aya: temperature 0.1, top-p 0.95, top-k 50; Qwen3.5: 0.7, 0.8, 20);
+`top_k` and `repetition_penalty` are extensions to the OpenAI API. A request without `max_tokens` gets the endpoint's
+default, cut to the room its prompt leaves.
 
-Decisions: each option is scored as a continuation of the context from its own copy of the context's state, so the
-answer cannot depend on the order the options are listed in (`docs/design.md`, `docs/bench/decision.md`):
+Decisions: each option is scored as a continuation of the context, from a fork of the context's state or, when only one
+option fits a group (long contexts), on the context's own state, which is then rewound exactly; so the answer cannot
+depend on the order the options are listed in (`docs/design.md`, `docs/bench/decision.md`):
 
 ```bash
 curl http://127.0.0.1:8000/v1/decide -H 'content-type: application/json' -d '{"type":"choice","question":"What is the capital of France?","options":["Lyon","Paris","Nice"]}'
@@ -161,7 +165,7 @@ Qwen3.5-2B (bf16/INT8/INT4), the server (batched == sequential, preemption, stre
 packed/chunked prefill (packed == alone, chunked == sequential, batching window) and decisions (forked == alone,
 shuffled options give bit-identical scores, stepwise jobs between decode steps) and the pinned chat preamble
 (a borrowed prefix == a chunk boundary at it, bit for bit; served == uncached; accounting, preemption, never-fit). `--save docs/bench/raw/tests`
-archives each suite's output and a summary with timings: the last full run (247 checks, 449 s) is in
+archives each suite's output and a summary with timings: the last full run (733 checks in 32 suite runs, every suite on every target, 2,675 s) is in
 [`docs/bench/raw/tests/`](docs/bench/raw/tests/); the last run with Qwen2.5 is in
 [`docs/bench/raw/tests/2026-09-30-with-qwen2.5/`](docs/bench/raw/tests/2026-09-30-with-qwen2.5/).
 

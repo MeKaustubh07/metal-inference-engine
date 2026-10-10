@@ -1,0 +1,19 @@
+PASS  tiny-aya-global metal-kernels-int8: 4 prompts packed in one pass (one continuing a half-prefilled state) == each alone, max|dlogit| 2.6e-05 < 0.03; decoding on from the packed states: max|d| 1.3e-03
+PASS  tiny-aya-global metal-kernels-int8: a 43-token pack (GEMM path) == its 18- and 25-token prompts alone (batched kernels), max|dlogit| 9.0e-03 < 0.03
+PASS  tiny-aya-global: prefill in 4-token chunks (9 packed passes for 34 prompt tokens) == sequential greedy
+PASS  tiny-aya-global: all 4 prompts packed into one prefill pass (1 pass) == sequential greedy
+PASS  a running request kept generating while a 98-token prompt was prefilled in 7 chunks (8 of its tokens came before the long prompt's first token)
+PASS  a request cancelled behind a 98-token prompt's 4-token chunks ends within 1 prefill step(s) (the long prompt needed 25); all KV blocks and state slots back
+PASS  3 requests arriving ~1 ms apart at an idle engine share 1 prefill pass (batching window)
+PASS  a request cancelled inside a 200 ms batching window does not extend it for the others (window 205 ms; 2 windows would be 400)
+PASS  batch_wait_ms inf / nan / 1e13 / -1 rejected at construction (a wait that long would kill the engine thread): 4 of 4
+PASS  GPU memory: peak 4.10 GiB <= 0.95 x the 5.33 GiB Metal recommends
+PASS  Metal aborted no command buffer of this process (macOS log: 0)
+PASS  the GPU target's model is freed and the MPS cache emptied
+N/A   qwen3.5-0.8b metal: 4 prompts packed in one pass == each alone (Qwen3.5 on Metal)
+N/A   qwen3.5-0.8b metal: a 43-token pack (GEMM path) == its prompts alone (Qwen3.5 on Metal)
+N/A   qwen3.5-0.8b metal-int4: 4 prompts packed in one pass == each alone (Qwen3.5 on Metal)
+N/A   qwen3.5-0.8b metal-int4: a 43-token pack (GEMM path) == its prompts alone (Qwen3.5 on Metal)
+N/A   qwen3.5-0.8b metal-int4: 4-token prefill chunks + a KV pool small enough to preempt == decoding alone, weights locked in RAM (Qwen3.5 on Metal)
+
+12/12 passed

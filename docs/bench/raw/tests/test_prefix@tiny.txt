@@ -1,0 +1,18 @@
+N/A   tiny-cohere2: the cache is refused and nothing else changes (qwen: no windowed KV pool)
+PASS  tiny-cohere2: the cache builds (note 'ok'): P = 64, the 77-token common prefix of the probe chats in whole blocks (expected 64); 16 pinned units = blocks_for(P) (4 blocks x 4 groups); cap 160 = the 10-block ring; free 240 = 256 - pinned, in /metrics too
+PASS  tiny-cohere2: at prefill chunks of 8 (a 2-block ring) the cache is refused ('a 77-token common prefix does not fit whole blocks inside the 2-block ring'): nothing pinned, every block free
+PASS  tiny-cohere2: 3 chats borrowing the 64-token preamble and prefilling the rest: logits == a fresh sequence of the same pool prefilled as ids[:P] then ids[P:] (torch.equal, every row), and over 4 decode steps (3/3)
+PASS  tiny-cohere2: the holder's K and V bit-unchanged afterwards; the borrowers' bytes_used count their own units; freed, they leave free == total - pinned (240 == 256 - 16)
+PASS  tiny-cohere2: borrow refuses a non-empty sequence, a sequence of another pool and 5 blocks of a 4-block holder (ValueError, 3/3)
+PASS  tiny-cohere2: a write to a borrowed block (a full group's block 0, a sliding group's block 10 onto ring slot 0, K/V at position 63, a forward past the cap) raises RuntimeError before any poison: the holder bit-unchanged (4/4); all freed, free == total - pinned
+PASS  tiny-cohere2: 6 requests (3 chats: hits; a 153-token chat + 15 new > the 160-token cap: a bypass; raw prompts of 6 and 183 > 160 tokens: misses, rings wrapping) in a 47-block pool: with the cache == without it == greedy alone (hits split at P)
+PASS  tiny-cohere2: prefill tokens 457 with the cache == 649 without - 64 x 3 hits; hits 3, bypasses 1 (without: 0, 0); attaches 3; no preemption
+PASS  tiny-cohere2: the holder's K and V bit-unchanged after serving; once idle, free == total - pinned (without the cache: == total)
+PASS  tiny-cohere2: 3 hits in a 15-block pool (44 units not pinned, 64 needed at the end): 1 preemptions, outputs as in check 4; 4 attaches (= hits + preemptions), prefill tokens 171 == 171 (each counted after P); holder bit-unchanged; all but the pinned free
+PASS  tiny-cohere2: never-fit: a miss of 140 positions needing 36 units (> the 20 not pinned, <= all 36) is refused at submit (ValueError); a hit of the same size (20 own units) is accepted and served as in check 4
+PASS  tiny-cohere2: never-fit over HTTP (create_app(prefix_cache=True)): the miss gets 400 (not a hang), the hit 200
+PASS  tiny-cohere2: HTTP with the cache (a hit, a bypass, a raw prompt) == without it == greedy alone
+PASS  tiny-cohere2: /metrics with the cache: hits, bypasses, pinned units, free [1.0, 1.0, 16.0, 172.0] == [1, 1, 16, 172]; without: [0.0, 0.0, 0.0, 188.0]
+PASS  the target's model is freed
+
+15/15 passed

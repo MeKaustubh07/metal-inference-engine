@@ -1,2 +1,9 @@
-Qwen3.5-0.8B: 66/66 cases match the official tokenizer (vocab 248077)
+PASS  Qwen3.5-0.8B: 193/193 cases match the official tokenizer (vocab 248077, BOS None)
+PASS  Tiny Aya Global: 193/193 cases match the official tokenizer (vocab 261008, BOS 2)
 PASS  Qwen3.5-2B tokenizer.json and tokenizer_config.json are byte-equal to the 0.8B's
+PASS  merge == HF tokenizers' BPE on 78696 strings over 24 synthetic tables (18 not monotone, where the old loop differs from HF on 534): 0 differ
+PASS  Qwen3.5-0.8B: ids == HF tokenizers' on 5205 texts (goldens, 5,000 random, unspaced CJK to 4,000 characters, the long texts; 27 merges out of order)
+PASS  Tiny Aya Global: ids == HF tokenizers' on 5205 texts (goldens, 5,000 random, unspaced CJK to 4,000 characters, the long texts; 0 merges out of order)
+PASS  Tiny Aya Global: no merge ranks before one that makes a part of it (0), and the merge == the old loop on all 39505 distinct words of up to 1,500 characters (0 differ; 2 longer ones checked against HF only)
+PASS  Qwen3.5-0.8B: 8,192 unspaced CJK characters in 0.02 s (< 0.5), 65,536 in 0.17 s (< 2)
+PASS  Tiny Aya Global: 8,192 unspaced CJK characters in 0.02 s (< 0.5), 65,536 in 0.16 s (< 2)

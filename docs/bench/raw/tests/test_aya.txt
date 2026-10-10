@@ -1,0 +1,58 @@
+PASS  Cohere2Config == transformers on all 13 fields
+PASS  36 layers, 16/4 heads x 128, window 4096, full attention at 3, 7, ..., 35, logit_scale 1.0, tied
+PASS  no logit_scale in the file -> 0.0625, as transformers (0.0625)
+PASS  rope_theta nested under rope_parameters (transformers 5 files) is read too
+PASS  refuses {'use_qk_norm': True}
+PASS  refuses {'position_embedding_type': 'rope'}
+PASS  refuses {'use_parallel_block': False}
+PASS  refuses {'rope_scaling': {'type': 'linear', 'factor': 2.0}}
+PASS  refuses {'head_dim': 256}
+PASS  refuses {'model_type': 'cohere'}
+PASS  refuses {'rope_parameters': {'type': 'linear', 'factor': 2.0, 'rope_theta': 50000}}
+PASS  refuses {'rope_parameters': {'rope_type': 'dynamic', 'factor': 2.0}}
+PASS  refuses {'sliding_window': 0}
+PASS  refuses {'sliding_window': None}
+PASS  refuses {'use_embedding_sharing': False}
+PASS  refuses {'tie_word_embeddings': False}
+PASS  index -> ShardedSafetensors with exactly the 290 expected tensors (no lm_head: tied)
+PASS  integrity: each file accounts for its bytes, and the tensor bytes add up to the index's total_size
+PASS  3,349,227,520 parameters, all BF16 (the published count is 3,349,227,520)
+PASS  get() == safetensors' own reader, bit for bit, on tensors from all 2 files
+PASS  an unknown name raises KeyError
+PASS  an index that disagrees with its files is refused
+PASS  chat text == apply_chat_template on 10 conversations x 2 (with and without generation prompt)
+PASS  their token ids are equal too, with a single BOS at the start
+      a one-line question is 372 prompt tokens, starting [2, 5, 9] (BOS 1x)
+PASS  two user turns in a row: refused by both (ours ValueError, transformers TemplateError)
+PASS  an assistant turn first: refused by both (ours ValueError, transformers TemplateError)
+PASS  TemplateChat on Qwen3.5's own template == apply_chat_template == the hand-written qwen3.5 style
+PASS  vocab: 261,008 contiguous ids (<= 262,144 output rows); every stop id survives the cut of the logits to the vocab
+PASS  registry: index weights, chat from the model's template, no thinking mode, stops {3: '<EOS_TOKEN>', 6: '<|END_OF_TURN_TOKEN|>', 261001: '<|END_RESPONSE|>'}
+PASS  registry: the card's sampling {'temperature': 0.1, 'top_p': 0.95, 'top_k': 50, 'repetition_penalty': 1.0}; max_model_len 8192 == the config's
+PASS  load_engine refuses Tiny Aya on the unquantized backends (cpu, mps, metal), before loading anything
+PASS  registry: Tiny Aya's KV cache is bf16 (load_engine passes {'kv_dtype': torch.bfloat16}); the other models keep fp32 (no kv_dtype: True)
+PASS  registry: INT8 serves at most 4096 tokens from 512 blocks (at 8K it held 5.48 GiB, over Metal's 5.33 on 8 GB), INT4 8192 from 768
+PASS  registry: INT4 /v1/decide takes at most 6144 tokens (at 8K it peaked at 4.99 GiB, 0.94x Metal's recommended), INT8's stays its 4096 cap
+PASS  decide: a raw prompt gets one BOS, a chat prompt one (from its template), an option none
+PASS  a raw prompt's ids == HF's default encode (BOS included)
+PASS  create_app(max_model_len=10000) gives the scheduler the model's own cap, 8192
+PASS  create_app() without kv_blocks gives the scheduler the model's pool (768 blocks); an explicit one wins
+PASS  create_app() without max_model_len uses the model's own cap; an explicit smaller one still lowers it
+PASS  /v1/completions: raw text gets one BOS ([2, 33987])
+PASS  /v1/chat/completions: one BOS, from the template (366 prompt tokens)
+PASS  /v1/chat/completions: two user turns -> 400 from the template, not 500
+PASS  /v1/chat/completions: an assistant turn first -> 400 from the template, not 500
+PASS  /v1/chat/completions: enable_thinking on a model without a thinking mode -> 400
+PASS  /v1/decide: a context past the model's 8192-token cap -> 400
+PASS  /v1/decide on a backend with a smaller decide limit (INT4: 6144): ~6.5K tokens -> 400, ~5K -> on to the scheduler (400, 429)
+PASS  max_tokens unset: a 282-token prompt under a 300 cap gets the 18 tokens left, not the default 128 (18); a short prompt keeps 128 (128); an explicit 200 is passed on as asked (200)
+PASS  sampling: a request that sets none of it gets the model card's (0.1, 0.95, 50, 1.0) ((0.1, 0.95, 50, 1.0)), seed None
+PASS  sampling: an explicit temperature 0.7 is kept, the rest stay the model's ((0.7, 0.95, 50, 1.0, 5))
+PASS  sampling: chat, streaming, an explicit 1.0 and top_k 0 are kept ((1.0, 0.95, 0, 1.0, None))
+PASS  sampling: null takes the model's value ((0.1, 0.95, 50, 1.0, None))
+PASS  sampling: an out-of-range explicit value is still refused (repetition_penalty 0.9 -> 422)
+PASS  sampling: the registry's own values are untouched by requests
+PASS  sampling: a model whose registry entry lacks a sampling field is refused at create_app (x: the registry's sampling lacks ['repetition_penalty', 'top_k', 'top_p'])
+PASS  no gated file and none of 224 64-char pieces of the template's text in the 147 repo files or 145 staged blobs
+
+55/55 passed

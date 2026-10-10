@@ -1,0 +1,18 @@
+N/A   the cache builds: note 'ok', P = the probe chats' common prefix in whole blocks, pinned = blocks_for(P)
+N/A   at the serving target's prefill chunk of 8 (a 2-block ring) the cache is refused with a note (tiny)
+PASS  qwen3.5-0.8b: the cache is refused ("needs a windowed KV pool and the model's own chat template") and nothing else changes: a chat and a raw prompt give the same ids and counters as with the cache off (prefill tokens 27), nothing pinned, every block free once idle
+N/A   2. a borrower's logits == a fresh sequence split at P (torch.equal), over decode steps
+N/A   2. the holder bit-unchanged; borrowers' bytes_used and free count their own units
+N/A   3. borrow refuses a non-empty sequence, another pool's sequence, too many blocks (ValueError)
+N/A   3. a write to a borrowed block raises RuntimeError before any poison; the holder bit-unchanged
+N/A   4. served with the cache == without it / greedy alone (hits, a bypass, misses, a ring that wraps)
+N/A   4. prefill tokens with the cache == without it - P x hits; hit / bypass counters; no preemption
+N/A   4. the holder bit-unchanged; free == total - pinned once idle
+N/A   5. preemption with the cache: hits borrow again, prefill counted after P, outputs as in 4
+N/A   6. never-fit: a miss over num_blocks - pinned is refused at submit, a hit of the same size served
+N/A   6. never-fit over HTTP: 400, not a hang; the hit 200
+N/A   7. HTTP chat completion with the cache == without it
+N/A   7. /metrics: engine_prefix_hits_total, engine_prefix_bypasses_total, engine_prefix_pinned_units
+PASS  the target's model is freed
+
+2/2 passed

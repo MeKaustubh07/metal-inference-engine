@@ -1,0 +1,40 @@
+PASS  all 10 captured tensors (embedding, 8 layers, final norm) == HF, worst relative error 1.2e-06
+PASS  logits (x logit_scale 0.25) == HF, relative error 1.5e-06
+PASS  sensitivity: half-split RoPE without the reordering is caught (relative error 7.5e-01)
+PASS  greedy: 12 tokens identical to HF's ([212, 120, 10, 144, 234, 221] ...)
+PASS  answer-key generator (one HF layer at a time) == the full HF model bit for bit, same greedy tokens
+PASS  answer-key generator, 3 prompts of different lengths in lockstep == HF on each alone
+PASS  cached decode == recomputing the whole sequence, relative error 2.9e-06
+PASS  paged KV (4-token blocks) == contiguous, max difference 0.0e+00
+PASS  paged: packed prefill == separate, batched decode == one at a time, relative error 2.5e-06
+PASS  contiguous: packed prefill == separate, batched decode == one at a time, relative error 2.5e-06
+PASS  paged: a packed chunk continuing a state == the whole prompt alone (1.4e-06)
+PASS  contiguous: a packed chunk continuing a state == the whole prompt alone (1.4e-06)
+PASS  packed_hidden then head == forward
+PASS  stream=True on bf16 weights: the same logits (6.6e-08), no widened weight kept, and the 512-row table only ever widened in slices of 100 rows
+PASS  stream=True refuses a non-CPU backend
+PASS  stream=True refuses bf16 weights on the CPU
+PASS  packed_hidden(capture=): the whole prompt and a 5-token prefix in one pack, every layer == HF
+PASS  fork: copy and original diverge at the same position, and the original stays exact
+PASS  bf16 KV: stored as bfloat16, 23552 bytes vs 47104 for fp32; prefill logits within 5.9e-03 (relative) of fp32 KV
+PASS  bf16 KV: paged pool (bfloat16) == contiguous, max difference 0.0e+00; the whole run within 5.9e-03 of fp32 KV
+PASS  bf16 KV: batched paged decode == one at a time, relative error 1.9e-06
+PASS  bf16 KV: prompt in two chunks (9 + 14) vs one pass: 18 of 11776 cached values one bf16 step apart, logits within 1.1e-04 (bf16 vs fp32 KV: 5.9e-03)
+PASS  bf16 KV: a fork is bfloat16 too and continues exactly like the original
+PASS  bf16 KV vs HF (fp32 K/V): same argmax at 23/23 positions, KL mean 6.6e-06 max 2.1e-05
+PASS  kv_dtype other than float32 / bfloat16 refused (the attention kernels read only those)
+PASS  answer key on bf16 shards, head in slices, 30 tokens past a 16-token window: every capture and logit bit-identical to HF, same greedy
+PASS  eps 1.0: every layer, the final norm and the logits == HF (worst 2.6e-06)
+PASS  a checkpoint with an untied lm_head is refused
+PASS  ... and the answer key refuses it too
+PASS  window 8, cap 16: 16 positions exact, the window binding (relative error 1.3e-06)
+PASS  window 8: at 16 positions HF's window does exclude keys (logits move by 8.1e-01)
+PASS  cap 16: a 17-position forward is refused
+PASS  cap 16, contiguous: a continuing chunk crossing it is refused, nothing moved, then exact
+PASS  cap 16, paged: a continuing chunk crossing it is refused, nothing moved, then exact
+PASS  cap 16: a pack with one chunk crossing it is refused whole, nothing moved
+PASS  cap 16: a batched decode with one sequence at it is refused, no block taken, no state moved
+PASS  every non_blocking host copy in src/ goes through state.to_device (none elsewhere)
+PASS  Metal: 6 decode steps issued while the GPU is busy give the same logits when each token id is overwritten as soon as forward() returns (the id is copied at the call)
+
+38/38 passed

@@ -1,16 +1,36 @@
-run_tests.py --save docs/bench/raw/tests at 2026-10-02 14:24 on commit 0bd0737 (+ uncommitted changes, if any)
+run_tests.py --save docs/bench/raw/tests at 2026-10-10 22:36 on commit ecc1c71 (+ uncommitted changes, if any)
 
-ok   test_tokenizer     1 pass  0 fail     0.3s
-ok   test_sampling     20 pass  0 fail    10.4s
-ok   test_cache        20 pass  0 fail    48.9s
-ok   test_paged        14 pass  0 fail    18.7s
-ok   test_kernels      32 pass  0 fail     8.0s
-ok   test_native        4 pass  0 fail     2.2s
-ok   test_quant        25 pass  0 fail    49.8s
-ok   test_qwen35       42 pass  0 fail    35.1s
-ok   test_qwen35_2b     6 pass  0 fail    61.0s
-ok   test_server       45 pass  0 fail   111.8s
-ok   test_prefill      14 pass  0 fail    62.2s
-ok   test_decision     24 pass  0 fail    40.4s
+ok   test_tokenizer           9 pass  0 fail     5.9s
+ok   test_aya                55 pass  0 fail     7.2s
+ok   test_cohere2            38 pass  0 fail     3.5s
+ok   test_window             33 pass  0 fail     6.8s
+ok   test_sampling           22 pass  0 fail     8.4s
+ok   test_cache              20 pass  0 fail    42.2s
+ok   test_paged              14 pass  0 fail    12.4s
+ok   test_kernels            58 pass  0 fail     8.8s
+ok   test_native              4 pass  0 fail     2.3s
+ok   test_quant              26 pass  0 fail    28.0s
+ok   test_qwen35             42 pass  0 fail    28.7s
+ok   test_qwen35_2b           6 pass  0 fail    48.1s
+ok   test_aya_model           6 pass  0 fail   189.7s
+ok   test_aya_long            6 pass  0 fail   345.7s
+ok   test_aya_long_quant      8 pass  0 fail   485.9s
+ok   test_aya_quant           5 pass  0 fail   133.9s
+ok   test_server             49 pass  0 fail    94.5s
+ok   test_prefill            15 pass  0 fail    57.7s
+ok   test_decision           31 pass  0 fail    49.6s
+ok   test_server@tiny        43 pass  0 fail    14.3s  (7 n/a)
+ok   test_prefill@tiny       10 pass  0 fail     6.3s  (5 n/a)
+ok   test_decision@tiny      22 pass  0 fail     5.7s  (5 n/a)
+ok   test_server@aya-int4    45 pass  0 fail    72.1s  (6 n/a)
+ok   test_prefill@aya-int4   12 pass  0 fail    31.7s  (5 n/a)
+ok   test_decision@aya-int4  24 pass  0 fail   104.5s  (1 n/a)  (4 reported)
+ok   test_server@aya-int8    45 pass  0 fail   115.3s  (6 n/a)
+ok   test_prefill@aya-int8   12 pass  0 fail    50.7s  (5 n/a)
+ok   test_decision@aya-int8  24 pass  0 fail   124.2s  (1 n/a)  (4 reported)
+ok   test_prefix@tiny        15 pass  0 fail     7.5s  (1 n/a)
+ok   test_prefix              2 pass  0 fail     9.6s  (14 n/a)
+ok   test_prefix@aya-int4    16 pass  0 fail   461.6s  (2 n/a)
+ok   test_prefix@aya-int8    16 pass  0 fail   112.3s  (2 n/a)
 
-ALL PASSED  (449 s in all)
+ALL PASSED  (2675 s in all)

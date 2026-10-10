@@ -1,0 +1,20 @@
+N/A   tiny-aya-global int4: the cache is refused and nothing else changes (qwen: no windowed KV pool)
+PASS  tiny-aya-global int4: the cache builds (note 'ok'): P = 352, the 361-token common prefix of the probe chats in whole blocks (expected 352); 88 pinned units = blocks_for(P) (22 blocks x 4 groups); cap 4624 = the 289-block ring; free 168 = 256 - pinned, in /metrics too
+N/A   tiny-aya-global int4: at the serving target's prefill chunk of 8 the cache is refused with a note (tiny)
+PASS  tiny-aya-global int4: 3 chats borrowing the 352-token preamble and prefilling the rest: logits == a fresh sequence of the same pool prefilled as ids[:P] then ids[P:] (torch.equal, every row), and over 4 decode steps (3/3)
+PASS  tiny-aya-global int4: the holder's K and V bit-unchanged afterwards; the borrowers' bytes_used count their own units; freed, they leave free == total - pinned (168 == 256 - 88)
+PASS  tiny-aya-global int4: borrow refuses a non-empty sequence, a sequence of another pool and 23 blocks of a 22-block holder (ValueError, 3/3)
+PASS  tiny-aya-global int4: a write to a borrowed block (a full group's block 0, a sliding group's block 289 onto ring slot 0, K/V at position 351) raises RuntimeError before any poison: the holder bit-unchanged (3/3); all freed, free == total - pinned
+PASS  tiny-aya-global int4: 6 requests (3 chats: hits; a 4623-token chat + 9 new > the 4624-token cap: a bypass; raw prompts of 6 and 4651 > 4624 tokens: misses, rings wrapping) in a 330-block pool: with the cache == greedy alone (hits split at P)
+PASS  tiny-aya-global int4: prefill tokens 9346 with the cache == 10402 without - 352 x 3 hits; hits 3, bypasses 1 (without: 0, 0); attaches 3; no preemption
+PASS  tiny-aya-global int4: the holder's K and V bit-unchanged after serving; once idle, free == total - pinned (without the cache: == total)
+PASS  tiny-aya-global int4: 3 hits in a 30-block pool (32 units not pinned, 48 needed at the end): 1 preemptions, outputs as in check 4; 4 attaches (= hits + preemptions), prefill tokens 101 == 101 (each counted after P); holder bit-unchanged; all but the pinned free
+PASS  tiny-aya-global int4: never-fit: a miss of 414 positions needing 104 units (> the 16 not pinned, <= all 104) is refused at submit (ValueError); a hit of the same size (16 own units) is accepted and served as in check 4
+PASS  tiny-aya-global int4: never-fit over HTTP (create_app(prefix_cache=True)): the miss gets 400 (not a hang), the hit 200
+PASS  tiny-aya-global int4: HTTP with the cache (a hit, a bypass, a raw prompt) == without it (near-ties) == greedy alone
+PASS  tiny-aya-global int4: /metrics with the cache: hits, bypasses, pinned units, free [1.0, 1.0, 88.0, 1232.0] == [1, 1, 88, 1232]; without: [0.0, 0.0, 0.0, 1320.0]
+PASS  GPU memory: peak 4.06 GiB <= 0.95 x the 5.33 GiB Metal recommends
+PASS  Metal aborted no command buffer of this process (macOS log: 0)
+PASS  the GPU target's model is freed and the MPS cache emptied
+
+16/16 passed

@@ -1,0 +1,17 @@
+PASS  tiny-cohere2 torch-cpu-float32: 4 prompts packed in one pass (one continuing a half-prefilled state) == each alone, max|dlogit| 1.4e-06 < 0.002; decoding on from the packed states: max|d| 0.0e+00
+PASS  tiny-cohere2 torch-cpu-float32: a 43-token pack (GEMM path) == its 18- and 25-token prompts alone (batched kernels), max|dlogit| 8.3e-07 < 0.002
+PASS  tiny-cohere2: prefill in 4-token chunks (11 packed passes for 41 prompt tokens) == sequential greedy
+PASS  tiny-cohere2: all 4 prompts packed into one prefill pass (1 pass) == sequential greedy
+PASS  a running request kept generating while a 146-token prompt was prefilled in 10 chunks (13 of its tokens came before the long prompt's first token)
+PASS  a request cancelled behind a 146-token prompt's 4-token chunks ends within 1 prefill step(s) (the long prompt needed 37); all KV blocks and state slots back
+PASS  3 requests arriving ~1 ms apart at an idle engine share 1 prefill pass (batching window)
+PASS  a request cancelled inside a 200 ms batching window does not extend it for the others (window 205 ms; 2 windows would be 400)
+PASS  batch_wait_ms inf / nan / 1e13 / -1 rejected at construction (a wait that long would kill the engine thread): 4 of 4
+PASS  the CPU target's model is freed before the Metal section
+N/A   qwen3.5-0.8b metal: 4 prompts packed in one pass == each alone (Qwen3.5 on Metal)
+N/A   qwen3.5-0.8b metal: a 43-token pack (GEMM path) == its prompts alone (Qwen3.5 on Metal)
+N/A   qwen3.5-0.8b metal-int4: 4 prompts packed in one pass == each alone (Qwen3.5 on Metal)
+N/A   qwen3.5-0.8b metal-int4: a 43-token pack (GEMM path) == its prompts alone (Qwen3.5 on Metal)
+N/A   qwen3.5-0.8b metal-int4: 4-token prefill chunks + a KV pool small enough to preempt == decoding alone, weights locked in RAM (Qwen3.5 on Metal)
+
+10/10 passed

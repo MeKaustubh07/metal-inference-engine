@@ -5,12 +5,13 @@ PASS  qwen3.5-0.8b: all 4 prompts packed into one prefill pass (1 pass) == seque
 PASS  a running request kept generating while a 108-token prompt was prefilled in 7 chunks (8 of its tokens came before the long prompt's first token)
 PASS  a request cancelled behind a 108-token prompt's 4-token chunks ends within 1 prefill step(s) (the long prompt needed 27); all KV blocks and state slots back
 PASS  3 requests arriving ~1 ms apart at an idle engine share 1 prefill pass (batching window)
-PASS  a request cancelled inside a 200 ms batching window does not extend it for the others (window 210 ms; 2 windows would be 400)
+PASS  a request cancelled inside a 200 ms batching window does not extend it for the others (window 205 ms; 2 windows would be 400)
 PASS  batch_wait_ms inf / nan / 1e13 / -1 rejected at construction (a wait that long would kill the engine thread): 4 of 4
+PASS  the CPU target's model is freed before the Metal section
 PASS  qwen3.5-0.8b metal-kernels-bf16: 4 prompts packed in one pass (one continuing a half-prefilled state) == each alone, max|dlogit| 0.0e+00 < 0.01; decoding on from the packed states: max|d| 0.0e+00
-PASS  qwen3.5-0.8b metal-kernels-bf16: a 43-token pack (GEMM path) == its 18- and 25-token prompts alone (batched kernels), max|dlogit| 2.1e-05 < 0.01
-PASS  qwen3.5-0.8b metal-kernels-int4: 4 prompts packed in one pass (one continuing a half-prefilled state) == each alone, max|dlogit| 2.9e-06 < 0.01; decoding on from the packed states: max|d| 0.0e+00
-PASS  qwen3.5-0.8b metal-kernels-int4: a 43-token pack (GEMM path) == its 18- and 25-token prompts alone (batched kernels), max|dlogit| 2.7e-05 < 0.01
+PASS  qwen3.5-0.8b metal-kernels-bf16: a 43-token pack (GEMM path) == its 18- and 25-token prompts alone (batched kernels), max|dlogit| 2.6e-05 < 0.01
+PASS  qwen3.5-0.8b metal-kernels-int4: 4 prompts packed in one pass (one continuing a half-prefilled state) == each alone, max|dlogit| 1.9e-06 < 0.01; decoding on from the packed states: max|d| 0.0e+00
+PASS  qwen3.5-0.8b metal-kernels-int4: a 43-token pack (GEMM path) == its 18- and 25-token prompts alone (batched kernels), max|dlogit| 2.9e-05 < 0.01
 PASS  qwen3.5-0.8b metal-int4: 4-token prefill chunks + a KV pool small enough to preempt (1 preemptions) == decoding alone, with the weights locked in RAM (574 MiB); every block and state slot returned
 
-14/14 passed
+15/15 passed

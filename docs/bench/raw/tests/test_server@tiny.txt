@@ -1,6 +1,6 @@
-PASS  qwen3.5-0.8b: batched greedy == sequential for 3 prompts (one joins at step 3)
-PASS  qwen3.5-0.8b: batched logits == sequential logits (max|diff| 4.0e-05 < 2e-3)
-PASS  qwen3.5-0.8b: every KV block and DeltaNet state slot returned to the pool after sequences leave
+PASS  tiny-cohere2: batched greedy == sequential for 3 prompts (one joins at step 3)
+PASS  tiny-cohere2: batched logits == sequential logits (max|diff| 9.5e-06 < 2e-3)
+PASS  tiny-cohere2: every KV block and DeltaNet state slot returned to the pool after sequences leave
 PASS  thinking mode: text before </think> is reasoning, after it content
 PASS  newlines after </think> are dropped even when they arrive in later pieces
 PASS  thinking mode cut off by max_tokens: everything is reasoning, no content
@@ -9,43 +9,44 @@ PASS  held-back tail that never becomes a stop string is flushed
 PASS  the near-tie rule (D9) on made-up logits: equal, cancelled early, a near-tie and an end-token near-tie accepted; a clear divergence or a wrong length refused; exact targets demand equality
 PASS  /health and /ready return 200
 PASS  4 concurrent completions (continuous batching) == sequential greedy text
-PASS  they really shared decode steps (mean decode batch 2.80 > 1.5)
+PASS  they really shared decode steps (mean decode batch 2.21 > 1.5)
 PASS  usage counts prompt and completion tokens
 PASS  finish_reason is 'length' at max_tokens
-PASS  a request that sets no sampling runs with the model's registry values ({'temperature': 0.7, 'top_p': 0.8, 'top_k': 20, 'repetition_penalty': 1.0})
+PASS  a request that sets no sampling runs with the model's registry values ({'temperature': 0.1, 'top_p': 0.95, 'top_k': 50, 'repetition_penalty': 1.0})
 PASS  SSE stream: text/event-stream, chunks concatenate to the non-stream text, ends with [DONE]
 PASS  chat completion == sequential greedy on the chat-formatted prompt; role assistant
 PASS  chat SSE: first delta carries role 'assistant'; deltas concatenate to the non-stream message
-PASS  Hindi (multi-byte) stream == non-stream == sequential, no U+FFFD: '\nयह परीक्षण के लिए आपको एक पुराना पानी'
-PASS  stop string 'if ': text cut before it, finish_reason 'stop', same when streaming
+PASS  Hindi (multi-byte) stream == non-stream == sequential: ' istory the ifre)�way What�ver\r�way What\r'
+N/A   Hindi reply has no U+FFFD (whole characters: a trained model's)
+PASS  stop string 'me!': text cut before it, finish_reason 'stop', same when streaming
 PASS  max_completion_tokens is honoured
 PASS  temperature 1e-40 behaves as greedy and does not break the request batched with it
 PASS  invalid parameters (incl. n > 1) -> 422
 PASS  system message not first / no user message -> 400; lone surrogate -> 422, not a crash ([400, 400, 422])
 PASS  prompt + max_tokens over max_model_len -> 400
-PASS  no max_tokens and a prompt that leaves 15 tokens of room: 200, at most 15 made (15)
+PASS  no max_tokens and a prompt that leaves 14 tokens of room: 200, at most 14 made (14)
 PASS  same seed -> same sampled text, even when the two requests are batched together
 PASS  /metrics exposes counters, gauges and latency histograms
 PASS  cancel stops generation early and frees its KV blocks and state slot
 PASS  graceful shutdown drains the in-flight request, then refuses new ones and reports not-ready
-PASS  UTF-8 holdback: 9 tokens -> 5 pieces [' Hi', ' 🫠', ' é', '中文', '🫠'], none with U+FFFD, joined == decode(ids)
+PASS  UTF-8 holdback: 21 tokens -> 10 pieces [' ', 'H', 'i', ' ', '🫠', ' ', 'é', '中', '文', '🫠'], none with U+FFFD, joined == decode(ids)
 PASS  bounded queue: over-capacity requests get 429 + Retry-After (codes [200, 200, 429, 429, 429, 429])
 PASS  rejections are counted in metrics
 PASS  cancelling a queued request frees its queue slot at once (no 429 for the next client)
 PASS  KV pool exhaustion preempts (1 preemptions) and recomputes: outputs still == sequential greedy
 PASS  all KV blocks and state slots free after preempted requests finish
-PASS  real uvicorn: SSE chunks arrive as they are generated (first 0.32s, last 2.49s)
-PASS  real uvicorn: a non-streaming request whose client gave up is cancelled (22 of 400 tokens made), blocks and state slot freed
+PASS  real uvicorn: SSE chunks arrive as they are generated (first 0.03s, last 0.38s)
+PASS  real uvicorn: a non-streaming request whose client gave up is cancelled (131 of 400 tokens made), blocks and state slot freed
 PASS  its request_finished log line says finish_reason 'cancelled' (the engine stops it one step after the handler logs)
 PASS  a stop-string completion is logged with finish_reason 'stop', what the client got ('stop')
 PASS  /metrics shows a request queued behind a step still in progress (waiting 1, running 1)
 PASS  real uvicorn: shutdown runs the lifespan (engine thread stopped, not ready)
 PASS  the CPU target's model is freed before the Metal sections
-PASS  batched bf16 matvec (M=2,3,8,13,32; with/without bias and residual) == per-row kernel == dense (worst 5.7e-06)
-PASS  batched int8 matvec (M=2,3,8,13,32; with/without bias and residual) == per-row kernel == dense (worst 9.1e-06)
-PASS  batched int4 matvec (M=2,3,8,13,32; with/without bias and residual) == per-row kernel == dense (worst 6.4e-06)
-PASS  qwen3.5-0.8b metal: decode_batch (B up to 4, one joins late) greedy == single-sequence greedy, max|dlogit| 0.0e+00 < 1e-2
-PASS  qwen3.5-0.8b metal-int4: decode_batch (B up to 4, one joins late) greedy == single-sequence greedy, max|dlogit| 9.2e-06 < 1e-2
-PASS  scheduler over a HybridPool on Metal INT4: 1 preemptions, outputs == decoding alone, all KV blocks and state slots returned
+N/A   batched bf16 matvec (M=2,3,8,13,32; with/without bias and residual) == per-row kernel == dense
+N/A   batched int8 matvec (M=2,3,8,13,32; with/without bias and residual) == per-row kernel == dense
+N/A   batched int4 matvec (M=2,3,8,13,32; with/without bias and residual) == per-row kernel == dense
+N/A   qwen3.5-0.8b metal: decode_batch (B up to 4, one joins late) greedy == single-sequence greedy
+N/A   qwen3.5-0.8b metal-int4: decode_batch (B up to 4, one joins late) greedy == single-sequence greedy
+N/A   scheduler over a HybridPool on Metal INT4: outputs == decoding alone, all KV blocks and state slots returned
 
-49/49 passed
+43/43 passed

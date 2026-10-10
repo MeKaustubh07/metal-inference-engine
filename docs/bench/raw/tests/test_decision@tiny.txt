@@ -1,0 +1,29 @@
+PASS  tiny Cohere2 (window 8), float32 KV, contexts of 5-40 tokens: options scored on the context's own state with no fork == from their own forks (bit-exact), and the context left as its prefill left it (5/5)
+PASS  tiny Cohere2 (window 8), bfloat16 KV, contexts of 5-40 tokens: options scored on the context's own state with no fork == from their own forks (bit-exact), and the context left as its prefill left it (5/5)
+PASS  tiny-cohere2 torch-cpu-float32: a fork continues like the original (0.0e+00), and feeding a fork leaves the original exactly untouched (0.0e+00)
+PASS  tiny-cohere2 torch-cpu-float32: forked scores == each option scored alone as context + option, max |dlogprob| 1.9e-06 < 0.0002 ([-12.579, -14.7, -62.125, -19.755])
+PASS  tiny-cohere2 torch-cpu-float32: shuffling the options only shuffles their scores and embeddings (bit-exact)
+PASS  tiny-cohere2 torch-cpu-float32: options in groups of one (memory budget) == all in one pass, max |d| 4.8e-07 < 0.0002
+PASS  tiny-cohere2 torch-cpu-float32: in groups of one, each option is scored on the context's own state with no fork, == from its own fork (bit-exact)
+PASS  tiny-cohere2 torch-cpu-float32: afterwards the context's state is exactly what its prefill left (length, K/V, recurrent state)
+N/A   boolean: Paris is the capital -> True; Lyon -> False
+N/A   score: a glowing review rates above 2.5, a scathing one below (0-4 scale)
+N/A   choice: picks 'Paris'
+PASS  choice: probabilities sum to 1 (1.000000)
+PASS  prepare rejects an unknown type, 3 boolean options, 1 choice, no score labels, an empty option (5/5)
+PASS  boundary tokens: {'0': False, 'es': False, ' Paris': True, ',': True, '\n': True, '<|end|>': True}
+PASS  plain prompts put one space before each option
+PASS  forked scores with the boundary term == one-sequence reference, max |d| 2.4e-06 < 2e-4
+N/A   '10' is not swallowed by its prefix '1': 7 + 3 -> '10'
+PASS  a 172-token context prefilled in 4-token chunks scores like one pass (max |d| 2.4e-06 < 2e-4)
+PASS  a decision over a 193-token context ran in 13 chunks while a stream generated 15 tokens, and gives the same result as running it whole
+PASS  a cancelled queued decision never runs (['later']); with 2 queued, /ready is false and a third is turned away
+PASS  /v1/decide choice: decision 0 ('Paris'); the shuffled request picks the same option with the same probabilities
+PASS  /v1/decide boolean with embeddings: False, one 128-dim embedding per option
+PASS  /v1/decide rejects bad input: [422, 422, 400, 400] == [422, 422, 400, 400]
+PASS  decisions counted in /metrics (engine_decisions_total 3)
+PASS  no KV blocks used by decisions (they run on their own forked states)
+PASS  the CPU target's model is freed before the Metal section
+N/A   Metal INT4 (Qwen3.5-0.8B): forks, shuffles, groups of one and the rewind within INT4/bf16 noise
+
+22/22 passed

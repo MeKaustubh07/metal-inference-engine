@@ -61,8 +61,9 @@ Forks are standalone states outside the KV pool, kept under 256 MB at a time.
 
 ## Limitations and next steps
 
-- Each fork copies the context's K/V: sharing the context's KV blocks copy-on-write (the basis of prefix caching)
-  would remove the copy.
+- Forks copy the context's K/V only when several options fit a group; long contexts score each option on the
+  context's own state and rewind it (bit-identical, no copy; M6 step 6). Reusing the pinned chat preamble for
+  decide's context would also save its prefill.
 - The JEV-style "answer token that sees every option" has no order-invariant counterpart in the DeltaNet layers;
   options are scored independently.
 - Zero-shot only. A trained head over the per-option embeddings (`"embeddings": true`) is future work.

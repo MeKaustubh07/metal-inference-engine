@@ -5,13 +5,13 @@ PASS  prompt 3 (10 tokens, prefill 5): cached vs uncached logits max|diff|=4.0e-
 PASS  prompt 4 (14 tokens, prefill 7): cached vs uncached logits max|diff|=5.3e-05, same argmax everywhere
 PASS  prompt 5 (57 tokens, prefill 28): cached vs uncached logits max|diff|=4.0e-05, same argmax everywhere
 PASS  chunked prefill on a non-empty state (3 + 4 + 1...) matches uncached: max|diff|=4.7e-05
-      CPU fp32, 32 tokens: no cache 10.19s (3.1 tok/s)  |  cache 2.75s (11.6 tok/s)  -> 3.7x
+      CPU fp32, 32 tokens: no cache 10.01s (3.2 tok/s)  |  cache 2.64s (12.1 tok/s)  -> 3.8x
 PASS  cached and uncached produce the same 32 tokens
 PASS  cache is faster
 PASS  state bytes = 20324352 for 5 tokens: KV 24576 B/token in fp32 (12288 in bf16) + fixed DeltaNet 20201472
 PASS  7 more tokens grow the state by exactly 7 x 24576 B (the DeltaNet state does not grow)
-PASS  MPS fp32 weights: cached (contiguous) == uncached at every position, max|diff|=5.1e-05
-PASS  MPS fp32 weights: cached (paged) == uncached at every position, max|diff|=5.1e-05
+PASS  MPS fp32 weights: cached (contiguous) == uncached at every position, max|diff|=5.3e-05
+PASS  MPS fp32 weights: cached (paged) == uncached at every position, max|diff|=5.3e-05
 PASS  MPS bf16 (contiguous, 10 tokens): cached vs uncached 0.19 within bf16 budget 0.29; argmax equal at 8/10 non-tied positions
 PASS  MPS bf16 (paged, 10 tokens): cached vs uncached 0.19 within bf16 budget 0.29; argmax equal at 8/10 non-tied positions
 PASS  MPS bf16: 10-token cached greedy matches HF fp32 for 10/10 tokens

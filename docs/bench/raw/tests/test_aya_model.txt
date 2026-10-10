@@ -1,0 +1,17 @@
+PASS  ids from the engine's tokenizer and chat template == the answer key's, all 9 prompts (826 tokens)
+PASS  the embedding rows of the 7 raw prompts are bit-identical to the answer key's
+PASS  all 38 captured tensors (embedding, 36 layers, final norm) == the answer key: worst relative error 6.5e-06 (final_norm); worst single token 9.4e-06 (l12_out)
+PASS  logits of every position == the answer key: worst 5.7e-06, worst single token 9.2e-06
+PASS  chat prompts (377, 377 tokens): the final hidden state of every position (worst token 1.5e-05) and the logits of the last 8 (worst token 9.7e-06) == the answer key
+      ok   'The capital of France is' -> ' Paris. The capital of France is Paris. The'
+      ok   'भारत की राजधानी नई दिल्ली है और' -> ' देश का सबसे बड़ा शहर है। यह भारत के'
+      ok   'عاصمة مصر هي' -> ' القاهرة\n\nالقاهرة هي عاصمة مصر، وهي'
+      ok   '中国的首都是' -> '北京，地处华北平原，东临'
+      ok   'Mji mkuu wa Kenya ni' -> ' Nairobi\n\nJina la mji mkuu wa Kenya ni'
+      ok   'def fibonacci(n):' -> ' \n    if n <= 1:\n        return'
+      ok   'The history of computing is a story of a' -> ' This abstraction is what makes computing powerful and flexible.\n\n'
+      ok   'What is the capital of France? Answer in' -> 'Paris.<|END_RESPONSE|><EOS_TOKEN>\nParis.<|END_RESPONSE|><EOS_TOKEN>\n'
+      ok   'भारत की राजधानी क्या है? एक शब्द में उत्' -> 'नयी दिल्ली<|END_RESPONSE|><EOS_TOKEN>\n**नयी दिल्ली'
+PASS  greedy: 10 tokens identical to the answer key on 9/9 prompts; the logits of all 81 decode steps == the answer key's (worst 1.4e-05)
+
+6/6 passed (188 s)

@@ -13,6 +13,7 @@ PASS  int4 matvec 7168x1024 (+residual) vs dequantized reference: rel diff 2.0e-
 PASS  policy groups: checkpoint component and fused names map to one group id (attention, DeltaNet, MLP)
 PASS  a kept fused tensor keeps ALL its components int8 (q, k, v; in_proj_qkv, z, b, a); others stay int4
 PASS  .qt round trip: quantized weight bit-identical (data, scales, mins), norm kept as bf16
+PASS  quantize() in row chunks == in one piece (int8 and int4, bit for bit)
       bf16 : weights 1.51 GB | perplexity 12.855 | KL vs fp32 0.0000 | top-1 agreement 100% | top-1 flips 0/183 non-tied | greedy ' Paris.\nThe capital of France is Paris.'
 PASS  every keep_int8 name in configs/quant/qwen3.5-{0.8b,2b}.json is a tensor the model builds (10 names)
       int8 : weights 0.80 GB | perplexity 12.844 | KL vs fp32 0.0013 | top-1 agreement 96% | top-1 flips 0/183 non-tied | greedy ' Paris.\nThe capital of France is Paris.'
@@ -28,4 +29,4 @@ PASS  calibrated int4 (sensitive tensors kept int8): KL vs fp32 0.068 < 0.15 and
 PASS  calibrated int4 stays well below int8 memory (0.598 vs int8 0.801 GB)
 PASS  sizes shrink: bf16 1.51 > int8 0.80 > int4 0.58 GB
 
-25/25 checks passed
+26/26 checks passed
