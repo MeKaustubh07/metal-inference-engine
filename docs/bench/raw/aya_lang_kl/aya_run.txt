@@ -1,0 +1,45 @@
+== ours int8
+ar: KLD 0.0006 (median 0.0005, p99 0.002) same top 99.4% ln(PPL ratio) +0.0016 PPL 63.81 vs 63.71  [45 s]
+de: KLD 0.0005 (median 0.0004, p99 0.002) same top 98.6% ln(PPL ratio) +0.0008 PPL 25.26 vs 25.24  [91 s]
+en: KLD 0.0005 (median 0.0004, p99 0.003) same top 98.6% ln(PPL ratio) -0.0002 PPL 21.56 vs 21.57  [112 s]
+es: KLD 0.0005 (median 0.0004, p99 0.003) same top 98.2% ln(PPL ratio) -0.0005 PPL 32.48 vs 32.50  [125 s]
+fr: KLD 0.0004 (median 0.0004, p99 0.003) same top 98.6% ln(PPL ratio) +0.0020 PPL 14.37 vs 14.34  [136 s]
+hi: KLD 0.0004 (median 0.0003, p99 0.002) same top 97.5% ln(PPL ratio) +0.0198 PPL 20.50 vs 20.10  [150 s]
+ja: KLD 0.0006 (median 0.0005, p99 0.004) same top 98.4% ln(PPL ratio) -0.0000 PPL 113.51 vs 113.51  [164 s]
+zh: KLD 0.0006 (median 0.0005, p99 0.003) same top 99.2% ln(PPL ratio) +0.0004 PPL 95.88 vs 95.84  [173 s]
+== ours int4
+ar: KLD 0.0858 (median 0.0665, p99 0.424) same top 84.7% ln(PPL ratio) +0.0972 PPL 70.21 vs 63.71  [23 s]
+de: KLD 0.0707 (median 0.0534, p99 0.352) same top 84.1% ln(PPL ratio) +0.0435 PPL 26.36 vs 25.24  [31 s]
+en: KLD 0.0733 (median 0.0556, p99 0.303) same top 83.3% ln(PPL ratio) +0.0792 PPL 23.35 vs 21.57  [39 s]
+es: KLD 0.0761 (median 0.0578, p99 0.383) same top 81.2% ln(PPL ratio) +0.0475 PPL 34.08 vs 32.50  [47 s]
+fr: KLD 0.0599 (median 0.0431, p99 0.339) same top 89.2% ln(PPL ratio) +0.0504 PPL 15.08 vs 14.34  [57 s]
+hi: KLD 0.0693 (median 0.0451, p99 0.519) same top 85.9% ln(PPL ratio) +0.0559 PPL 21.25 vs 20.10  [66 s]
+ja: KLD 0.1018 (median 0.0733, p99 0.661) same top 85.5% ln(PPL ratio) +0.0402 PPL 118.16 vs 113.51  [76 s]
+zh: KLD 0.1017 (median 0.0841, p99 0.453) same top 78.6% ln(PPL ratio) +0.0933 PPL 105.21 vs 95.84  [87 s]
+== mlx 4bit
+ar: KLD 0.1592 (median 0.1210, p99 0.951) same top 76.7% ln(PPL ratio) +0.1151 PPL 71.48 vs 63.71  [9 s]
+de: KLD 0.1555 (median 0.1251, p99 0.797) same top 72.4% ln(PPL ratio) +0.0941 PPL 27.73 vs 25.24  [16 s]
+en: KLD 0.1481 (median 0.1329, p99 0.530) same top 75.3% ln(PPL ratio) +0.1013 PPL 23.87 vs 21.57  [23 s]
+es: KLD 0.1651 (median 0.1339, p99 0.916) same top 73.9% ln(PPL ratio) +0.1759 PPL 38.75 vs 32.50  [30 s]
+fr: KLD 0.1377 (median 0.1165, p99 0.622) same top 78.4% ln(PPL ratio) +0.0908 PPL 15.70 vs 14.34  [37 s]
+hi: KLD 0.1007 (median 0.0830, p99 0.490) same top 81.4% ln(PPL ratio) +0.0856 PPL 21.89 vs 20.10  [45 s]
+ja: KLD 0.1760 (median 0.1247, p99 0.908) same top 77.3% ln(PPL ratio) +0.0868 PPL 123.80 vs 113.51  [53 s]
+zh: KLD 0.1863 (median 0.1502, p99 0.775) same top 72.5% ln(PPL ratio) +0.1055 PPL 106.50 vs 95.84  [61 s]
+== llama q4_0
+ar: Mean ln(PPL(Q)/PPL(base)) : 0.045141 ± 0.025199 Mean KLD: 0.111654 ± 0.004427 Same top p: 80.000 ± 1.773 % 
+de: Mean ln(PPL(Q)/PPL(base)) : -0.010618 ± 0.023323 Mean KLD: 0.100434 ± 0.004893 Same top p: 80.000 ± 1.773 % 
+en: Mean ln(PPL(Q)/PPL(base)) : 0.043956 ± 0.020498 Mean KLD: 0.085284 ± 0.003761 Same top p: 82.745 ± 1.675 % 
+es: Mean ln(PPL(Q)/PPL(base)) : 0.065730 ± 0.028143 Mean KLD: 0.093250 ± 0.003661 Same top p: 83.137 ± 1.660 % 
+fr: Mean ln(PPL(Q)/PPL(base)) : 0.061419 ± 0.021598 Mean KLD: 0.086941 ± 0.004809 Same top p: 84.510 ± 1.604 % 
+hi: Mean ln(PPL(Q)/PPL(base)) : 0.023470 ± 0.028797 Mean KLD: 0.077990 ± 0.004522 Same top p: 81.176 ± 1.733 % 
+ja: Mean ln(PPL(Q)/PPL(base)) : 0.054279 ± 0.031655 Mean KLD: 0.132740 ± 0.006105 Same top p: 83.529 ± 1.644 % 
+zh: Mean ln(PPL(Q)/PPL(base)) : 0.060570 ± 0.027195 Mean KLD: 0.127341 ± 0.004788 Same top p: 77.647 ± 1.847 % 
+== llama q4_k_m
+ar: Mean ln(PPL(Q)/PPL(base)) : 0.091773 ± 0.021003 Mean KLD: 0.057568 ± 0.002641 Same top p: 80.784 ± 1.746 % 
+de: Mean ln(PPL(Q)/PPL(base)) : 0.061075 ± 0.016166 Mean KLD: 0.043621 ± 0.001885 Same top p: 85.098 ± 1.578 % 
+en: Mean ln(PPL(Q)/PPL(base)) : 0.033310 ± 0.015630 Mean KLD: 0.047047 ± 0.002305 Same top p: 84.706 ± 1.595 % 
+es: Mean ln(PPL(Q)/PPL(base)) : 0.035096 ± 0.018276 Mean KLD: 0.049518 ± 0.002354 Same top p: 86.078 ± 1.534 % 
+fr: Mean ln(PPL(Q)/PPL(base)) : 0.034637 ± 0.016147 Mean KLD: 0.040499 ± 0.002151 Same top p: 87.843 ± 1.448 % 
+hi: Mean ln(PPL(Q)/PPL(base)) : 0.073055 ± 0.023433 Mean KLD: 0.036330 ± 0.001917 Same top p: 89.216 ± 1.375 % 
+ja: Mean ln(PPL(Q)/PPL(base)) : 0.085315 ± 0.020736 Mean KLD: 0.063163 ± 0.002753 Same top p: 87.647 ± 1.458 % 
+zh: Mean ln(PPL(Q)/PPL(base)) : 0.051467 ± 0.018371 Mean KLD: 0.070850 ± 0.003469 Same top p: 83.137 ± 1.660 % 

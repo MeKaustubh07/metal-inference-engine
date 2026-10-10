@@ -1,0 +1,30 @@
+== qwen ref
+     56 s  wrote en.kld (vocab 248320)
+    116 s  wrote fr.kld (vocab 248320)
+    175 s  wrote de.kld (vocab 248320)
+    233 s  wrote es.kld (vocab 248320)
+    301 s  wrote hi.kld (vocab 248320)
+    373 s  wrote ar.kld (vocab 248320)
+    440 s  wrote zh.kld (vocab 248320)
+    504 s  wrote ja.kld (vocab 248320)
+done in 504 s
+          3099525120  maximum resident set size
+          1406783760  peak memory footprint
+== qwen ours int8
+ar: KLD 0.0010 (median 0.0008, p99 0.004) same top 97.5% ln(PPL ratio) -0.0025 PPL 30.38 vs 30.46  [12 s]
+de: KLD 0.0008 (median 0.0006, p99 0.005) same top 97.3% ln(PPL ratio) +0.0007 PPL 16.35 vs 16.34  [17 s]
+en: KLD 0.0009 (median 0.0007, p99 0.004) same top 97.8% ln(PPL ratio) +0.0005 PPL 14.80 vs 14.79  [22 s]
+es: KLD 0.0009 (median 0.0006, p99 0.005) same top 96.9% ln(PPL ratio) -0.0000 PPL 22.01 vs 22.01  [27 s]
+fr: KLD 0.0007 (median 0.0005, p99 0.004) same top 98.2% ln(PPL ratio) -0.0017 PPL 10.02 vs 10.03  [33 s]
+hi: KLD 0.0007 (median 0.0005, p99 0.005) same top 97.5% ln(PPL ratio) +0.0017 PPL 9.29 vs 9.27  [41 s]
+ja: KLD 0.0010 (median 0.0008, p99 0.007) same top 98.0% ln(PPL ratio) +0.0017 PPL 40.31 vs 40.24  [48 s]
+zh: KLD 0.0010 (median 0.0008, p99 0.005) same top 96.5% ln(PPL ratio) +0.0016 PPL 40.40 vs 40.34  [55 s]
+== qwen ours int4
+ar: KLD 0.0906 (median 0.0676, p99 0.507) same top 80.2% ln(PPL ratio) +0.1074 PPL 33.91 vs 30.46  [10 s]
+de: KLD 0.0628 (median 0.0500, p99 0.314) same top 84.1% ln(PPL ratio) +0.0749 PPL 17.61 vs 16.34  [16 s]
+en: KLD 0.0547 (median 0.0434, p99 0.273) same top 85.1% ln(PPL ratio) +0.0597 PPL 15.70 vs 14.79  [21 s]
+es: KLD 0.0577 (median 0.0472, p99 0.268) same top 83.7% ln(PPL ratio) +0.0392 PPL 22.89 vs 22.01  [27 s]
+fr: KLD 0.0565 (median 0.0395, p99 0.300) same top 85.5% ln(PPL ratio) +0.0743 PPL 10.81 vs 10.03  [32 s]
+hi: KLD 0.0509 (median 0.0344, p99 0.314) same top 88.4% ln(PPL ratio) +0.0655 PPL 9.90 vs 9.27  [38 s]
+ja: KLD 0.0832 (median 0.0649, p99 0.379) same top 82.0% ln(PPL ratio) +0.0885 PPL 43.96 vs 40.24  [45 s]
+zh: KLD 0.0786 (median 0.0695, p99 0.365) same top 83.1% ln(PPL ratio) +0.0587 PPL 42.77 vs 40.34  [52 s]

@@ -1,0 +1,14 @@
+{
+ "keep_int8": [
+  "layers.0.mlp.down_proj.weight",
+  "layers.35.mlp.down_proj.weight",
+  "layers.7.mlp.down_proj.weight",
+  "layers.35.mlp.gate_up.weight",
+  "layers.0.mlp.gate_up.weight",
+  "layers.2.mlp.gate_up.weight",
+  "layers.3.mlp.gate_up.weight",
+  "layers.19.mlp.gate_up.weight",
+  "layers.1.mlp.gate_up.weight",
+  "layers.7.mlp.gate_up.weight"
+ ]
+}

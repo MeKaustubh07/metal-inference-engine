@@ -1,0 +1,73 @@
+== mlx default
+[INFO] Quantized model with 4.500 bits per weight.
+default: 253 quantized modules, 0 at 6 bits ([] ...), 1.88 GB
+ar: KLD 0.1592 (median 0.1210, p99 0.951) same top 76.7% ln(PPL ratio) +0.1151  [12 s]
+de: KLD 0.1555 (median 0.1251, p99 0.797) same top 72.4% ln(PPL ratio) +0.0941  [19 s]
+en: KLD 0.1481 (median 0.1329, p99 0.530) same top 75.3% ln(PPL ratio) +0.1013  [27 s]
+es: KLD 0.1651 (median 0.1339, p99 0.916) same top 73.9% ln(PPL ratio) +0.1759  [36 s]
+fr: KLD 0.1377 (median 0.1165, p99 0.622) same top 78.4% ln(PPL ratio) +0.0908  [44 s]
+hi: KLD 0.1007 (median 0.0830, p99 0.490) same top 81.4% ln(PPL ratio) +0.0856  [52 s]
+ja: KLD 0.1760 (median 0.1247, p99 0.908) same top 77.3% ln(PPL ratio) +0.0868  [66 s]
+zh: KLD 0.1863 (median 0.1502, p99 0.775) same top 72.5% ln(PPL ratio) +0.1055  [75 s]
+== mlx mixed_4_6
+[INFO] Quantized model with 4.754 bits per weight.
+mixed_4_6: 253 quantized modules, 36 at 6 bits (['model.layers.0.mlp.down_proj', 'model.layers.0.self_attn.v_proj', 'model.layers.1.mlp.down_proj'] ...), 1.99 GB
+ar: KLD 0.1173 (median 0.0923, p99 0.813) same top 80.0% ln(PPL ratio) +0.0797  [16 s]
+de: KLD 0.1239 (median 0.1031, p99 0.586) same top 73.5% ln(PPL ratio) +0.0860  [26 s]
+en: KLD 0.1164 (median 0.1085, p99 0.378) same top 75.9% ln(PPL ratio) +0.0905  [36 s]
+es: KLD 0.1326 (median 0.1138, p99 0.541) same top 77.3% ln(PPL ratio) +0.1523  [47 s]
+fr: KLD 0.1165 (median 0.1012, p99 0.471) same top 78.6% ln(PPL ratio) +0.0903  [55 s]
+hi: KLD 0.0808 (median 0.0647, p99 0.353) same top 82.0% ln(PPL ratio) +0.0587  [64 s]
+ja: KLD 0.1408 (median 0.0955, p99 0.874) same top 77.8% ln(PPL ratio) +0.0527  [72 s]
+zh: KLD 0.1448 (median 0.1096, p99 0.734) same top 75.3% ln(PPL ratio) +0.1098  [80 s]
+== mlx q4km_bits
+[INFO] Quantized model with 5.074 bits per weight.
+q4km_bits: 253 quantized modules, 37 at 6 bits (['model.embed_tokens', 'model.layers.0.mlp.down_proj', 'model.layers.0.self_attn.v_proj'] ...), 2.12 GB
+ar: KLD 0.0884 (median 0.0709, p99 0.460) same top 82.5% ln(PPL ratio) +0.0590  [19 s]
+de: KLD 0.0819 (median 0.0589, p99 0.474) same top 78.4% ln(PPL ratio) +0.0512  [27 s]
+en: KLD 0.0736 (median 0.0595, p99 0.322) same top 82.0% ln(PPL ratio) +0.0378  [35 s]
+es: KLD 0.0818 (median 0.0611, p99 0.418) same top 84.7% ln(PPL ratio) +0.0856  [42 s]
+fr: KLD 0.0701 (median 0.0511, p99 0.473) same top 85.7% ln(PPL ratio) +0.0576  [50 s]
+hi: KLD 0.0615 (median 0.0467, p99 0.316) same top 84.9% ln(PPL ratio) +0.0238  [60 s]
+ja: KLD 0.1095 (median 0.0732, p99 0.615) same top 81.2% ln(PPL ratio) +0.0418  [69 s]
+zh: KLD 0.1141 (median 0.0852, p99 0.513) same top 78.2% ln(PPL ratio) +0.1003  [78 s]
+== policy qwen3.5-2b none
+qwen3.5-2b INT4, keep INT8: (embedding only)
+ar: KLD 0.1198 (median 0.0885, p99 0.673) same top 76.3% ln(PPL ratio) +0.1226 PPL 34.43 vs 30.46  [19 s]
+de: KLD 0.0708 (median 0.0576, p99 0.328) same top 83.5% ln(PPL ratio) +0.0779 PPL 17.67 vs 16.34  [25 s]
+en: KLD 0.0679 (median 0.0507, p99 0.324) same top 82.7% ln(PPL ratio) +0.0642 PPL 15.77 vs 14.79  [30 s]
+es: KLD 0.0690 (median 0.0552, p99 0.327) same top 81.6% ln(PPL ratio) +0.0566 PPL 23.30 vs 22.01  [35 s]
+fr: KLD 0.0716 (median 0.0443, p99 0.523) same top 83.5% ln(PPL ratio) +0.1048 PPL 11.14 vs 10.03  [41 s]
+hi: KLD 0.0698 (median 0.0493, p99 0.433) same top 87.6% ln(PPL ratio) +0.1004 PPL 10.25 vs 9.27  [47 s]
+ja: KLD 0.1076 (median 0.0826, p99 0.538) same top 79.8% ln(PPL ratio) +0.1214 PPL 45.43 vs 40.24  [56 s]
+zh: KLD 0.1004 (median 0.0822, p99 0.496) same top 80.8% ln(PPL ratio) +0.0788 PPL 43.64 vs 40.34  [63 s]
+== policy tiny-aya-global shipped
+tiny-aya-global INT4, keep INT8: ['layers.0.mlp.down_proj.weight']
+ar: KLD 0.0858 (median 0.0665, p99 0.424) same top 84.7% ln(PPL ratio) +0.0972 PPL 70.21 vs 63.71  [29 s]
+de: KLD 0.0707 (median 0.0534, p99 0.352) same top 84.1% ln(PPL ratio) +0.0435 PPL 26.36 vs 25.24  [36 s]
+en: KLD 0.0733 (median 0.0556, p99 0.303) same top 83.3% ln(PPL ratio) +0.0792 PPL 23.35 vs 21.57  [43 s]
+es: KLD 0.0761 (median 0.0578, p99 0.383) same top 81.2% ln(PPL ratio) +0.0475 PPL 34.08 vs 32.50  [54 s]
+fr: KLD 0.0599 (median 0.0431, p99 0.339) same top 89.2% ln(PPL ratio) +0.0504 PPL 15.08 vs 14.34  [65 s]
+hi: KLD 0.0693 (median 0.0451, p99 0.519) same top 85.9% ln(PPL ratio) +0.0559 PPL 21.25 vs 20.10  [78 s]
+ja: KLD 0.1018 (median 0.0733, p99 0.661) same top 85.5% ln(PPL ratio) +0.0402 PPL 118.16 vs 113.51  [89 s]
+zh: KLD 0.1017 (median 0.0841, p99 0.453) same top 78.6% ln(PPL ratio) +0.0933 PPL 105.21 vs 95.84  [100 s]
+== policy tiny-aya-global none
+tiny-aya-global INT4, keep INT8: (embedding only)
+ar: KLD 0.0915 (median 0.0698, p99 0.386) same top 84.7% ln(PPL ratio) +0.0955 PPL 70.09 vs 63.71  [33 s]
+de: KLD 0.0776 (median 0.0555, p99 0.442) same top 82.5% ln(PPL ratio) +0.0499 PPL 26.53 vs 25.24  [41 s]
+en: KLD 0.0810 (median 0.0615, p99 0.359) same top 83.3% ln(PPL ratio) +0.0967 PPL 23.76 vs 21.57  [54 s]
+es: KLD 0.0846 (median 0.0631, p99 0.519) same top 80.2% ln(PPL ratio) +0.0596 PPL 34.49 vs 32.50  [63 s]
+fr: KLD 0.0662 (median 0.0461, p99 0.405) same top 88.0% ln(PPL ratio) +0.0515 PPL 15.10 vs 14.34  [73 s]
+hi: KLD 0.0731 (median 0.0465, p99 0.570) same top 85.7% ln(PPL ratio) +0.0707 PPL 21.57 vs 20.10  [83 s]
+ja: KLD 0.1115 (median 0.0774, p99 0.696) same top 84.5% ln(PPL ratio) +0.0570 PPL 120.16 vs 113.51  [92 s]
+zh: KLD 0.1119 (median 0.0901, p99 0.488) same top 79.0% ln(PPL ratio) +0.1219 PPL 108.27 vs 95.84  [103 s]
+== policy tiny-aya-global top10
+tiny-aya-global INT4, keep INT8: ['layers.0.mlp.down_proj.weight', 'layers.35.mlp.down_proj.weight', 'layers.7.mlp.down_proj.weight', 'layers.35.mlp.gate_up.weight', 'layers.0.mlp.gate_up.weight', 'layers.2.mlp.gate_up.weight', 'layers.3.mlp.gate_up.weight', 'layers.19.mlp.gate_up.weight', 'layers.1.mlp.gate_up.weight', 'layers.7.mlp.gate_up.weight']
+ar: KLD 0.0730 (median 0.0586, p99 0.334) same top 85.5% ln(PPL ratio) +0.0960 PPL 70.12 vs 63.71  [31 s]
+de: KLD 0.0570 (median 0.0417, p99 0.257) same top 84.9% ln(PPL ratio) +0.0426 PPL 26.34 vs 25.24  [40 s]
+en: KLD 0.0602 (median 0.0450, p99 0.266) same top 83.5% ln(PPL ratio) +0.0670 PPL 23.06 vs 21.57  [48 s]
+es: KLD 0.0605 (median 0.0460, p99 0.375) same top 84.3% ln(PPL ratio) +0.0397 PPL 33.81 vs 32.50  [60 s]
+fr: KLD 0.0503 (median 0.0334, p99 0.311) same top 89.0% ln(PPL ratio) +0.0301 PPL 14.78 vs 14.34  [73 s]
+hi: KLD 0.0536 (median 0.0370, p99 0.367) same top 86.7% ln(PPL ratio) +0.0534 PPL 21.20 vs 20.10  [91 s]
+ja: KLD 0.0818 (median 0.0586, p99 0.476) same top 85.9% ln(PPL ratio) +0.0405 PPL 118.20 vs 113.51  [102 s]
+zh: KLD 0.0841 (median 0.0674, p99 0.345) same top 81.2% ln(PPL ratio) +0.0704 PPL 102.83 vs 95.84  [113 s]

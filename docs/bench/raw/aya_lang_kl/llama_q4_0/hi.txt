@@ -1,0 +1,51 @@
+0.00.621.688 W load: special_eos_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.00.797.498 I cmn          init: llama threadpool init, n_threads = 4
+0.00.863.132 I 
+0.00.863.156 I system_info: n_threads = 4 (n_threads_batch = 4) / 8 | MTL : EMBED_LIBRARY = 1 | CPU : NEON = 1 | ARM_FMA = 1 | MATMUL_INT8 = 1 | DOTPROD = 1 | ACCELERATE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.00.872.752 I kl_divergence: computing over 2 chunks, n_ctx=512, batch_size=512, n_seq=1
+0.02.492.226 I kl_divergence: 1.62 seconds per pass - ETA 0.05 minutes
+
+chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p
+   1      13.0603 ±    2.5110       0.01836 ±    0.02921       0.07837 ±    0.00577     7.339 ±  0.781 %    82.353 ±  2.392 %
+   2      20.5734 ±    3.1872       0.02347 ±    0.02880       0.07799 ±    0.00452     7.135 ±  0.845 %    81.176 ±  1.733 %
+
+====== Perplexity statistics ======
+Mean PPL(Q)                   :  20.573384 ±   3.187240
+Mean PPL(base)                :  20.096151 ±   3.044981
+Cor(ln(PPL(Q)), ln(PPL(base))):  98.26%
+Mean ln(PPL(Q)/PPL(base))     :   0.023470 ±   0.028797
+Mean PPL(Q)/PPL(base)         :   1.023747 ±   0.029481
+Mean PPL(Q)-PPL(base)         :   0.477232 ±   0.598594
+
+====== KL divergence statistics ======
+Mean    KLD:   0.077990 ±   0.004522
+Maximum KLD:   1.345574
+99.9%   KLD:   1.053548
+99.0%   KLD:   0.465951
+95.0%   KLD:   0.215311
+90.0%   KLD:   0.157839
+Median  KLD:   0.059064
+10.0%   KLD:   0.002543
+ 5.0%   KLD:   0.000584
+ 1.0%   KLD:   0.000136
+ 0.1%   KLD:   0.000058
+Minimum KLD:   0.000056
+
+====== Token probability statistics ======
+Mean    Δp: -0.369 ± 0.316 %
+Maximum Δp: 46.962%
+99.9%   Δp: 38.806%
+99.0%   Δp: 18.050%
+95.0%   Δp:  9.707%
+90.0%   Δp:  5.128%
+75.0%   Δp:  0.536%
+Median  Δp: -0.007%
+25.0%   Δp: -1.245%
+10.0%   Δp: -6.479%
+ 5.0%   Δp: -10.913%
+ 1.0%   Δp: -20.872%
+ 0.1%   Δp: -48.673%
+Minimum Δp: -73.089%
+RMS Δp    :  7.135 ± 0.845 %
+Same top p: 81.176 ± 1.733 %
+
